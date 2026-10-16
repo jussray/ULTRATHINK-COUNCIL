@@ -137,10 +137,41 @@ export function reviewCourt(packet, input) {
     verdict,
     gaps,
     witnesses:copy(input.claims),
+    // Persist the exact launch context needed for downstream Court replay.
+    launchGate:launch === undefined ? null : copy(launch),
     dissent:copy(input.dissent),
     strongestChallenge:input.strongestChallenge,
     authority:{decisionOwner:'founder', grantsExecutionAuthority:false},
     limits:['No external evidence fetched here', 'Witness root and independence claims are not authenticated here', 'No live-provider identity verified here', 'No merge, deploy, publish, spend, delete, or cross-project writes authorized', ...witnessLimitations],
   };
   return {...record, fingerprint:fingerprint(record)};
+}
+
+/** Re-evaluate a transported Court record against its original Council input.
+ * SHA integrity alone is not attestation, authentication, or proof of origin.
+ * Older Court records without launchGate cannot be verified across the seam.
+ */
+export function verifyCourt(packet, court) {
+  verifyCouncil(packet);
+  exactFields(court, [
+    'contract', 'councilRound', 'councilFingerprint', 'verdict', 'gaps',
+    'witnesses', 'launchGate', 'dissent', 'strongestChallenge',
+    'authority', 'limits', 'fingerprint'
+  ], 'Court record');
+  ensure(court.contract === COURT_CONTRACT, 'Unknown Court contract');
+  ensure(court.councilRound === packet.roundId &&
+    court.councilFingerprint === packet.fingerprint, 'Court/Council lineage mismatch');
+  const {fingerprint:claimed, ...content} = court;
+  ensure(typeof claimed === 'string' && claimed === fingerprint(content), 'Court fingerprint mismatch');
+  ensure(court.launchGate === null || isObject(court.launchGate), 'Invalid Court launch context');
+  // The returned verdict and limits must be exact deterministic outputs of
+  // the policy, not merely a new signed-looking digest produced by a sender.
+  const expected = reviewCourt(packet, {
+    claims:court.witnesses,
+    dissent:court.dissent,
+    strongestChallenge:court.strongestChallenge,
+    ...(court.launchGate === null ? {} : {launchGate:court.launchGate}),
+  });
+  ensure(expected.fingerprint === court.fingerprint, 'Court ruling recheck mismatch');
+  return true;
 }

@@ -39,3 +39,28 @@ and the Node 24-compatible `checkout@v5` / `setup-node@v5` actions.
 This is source/conformance coverage. A passing gate cannot certify a live
 Council Bus callback, authentic provider identity, visual launch, or founder
 approval. Keep those as separate external proof gates in Linear ENG-7.
+
+## Council Bus integration seam (pure, not deployed)
+
+`src/busHandoff.mjs` exports `prepareCouncilBusHandoff` and
+`verifyCouncilBusHandoff`. They bind a Council packet and re-evaluated Court
+record to a symbolic originating agent/route, thread ID, and correlation ID;
+produce a deterministic idempotency key; and explicitly keep delivery as
+`PREPARED_NOT_SENT`. No callback URL, credentials, private transcript text,
+provider calls, new persisted store, or delivery receipts are created. This
+metadata can be passed by an authorized runtime to the **existing** Council Bus
+transport only after its exact source contract is inspected.
+
+`verifyCourt` now re-evaluates a Court record against its original Council
+packet and persisted `launchGate`, so a re-fingerprinted record cannot simply
+turn a visual FAIL into readiness. Records emitted before this fix without
+`launchGate` are rejected at the transport boundary and should be reissued;
+there is no silent legacy trust or false-green migration. Neither a recomputed
+hash nor `READY_FOR_EXTERNAL_VERIFICATION` proves third-party identity or
+external outcomes.
+
+The receiving Bus must independently authenticate origin/callbacks, enforce
+idempotency and replay windows, bound retries and cost, choose one canonical
+persisted transcript, and prove authenticated return-to-origin delivery.
+Those tests require authorized provider/runtime access and remain **BLOCKED**
+until ENG-7 has authoritative source and real readback.
