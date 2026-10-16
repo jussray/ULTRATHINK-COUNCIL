@@ -15,3 +15,67 @@ test('Court does not fake independent corroboration',()=>{const result=reviewCou
 test('Source/runtime green with missing visual proof remains HOLD',()=>{const result=reviewCourt(sample(),{claims:[{id:'code',status:'VERIFIED',witnesses:[{class:'repository_source',ref:'a',root:'repo'}]}],launchGate:{destinationIdentity:'VERIFIED',functionalRuntime:'VERIFIED',visualCanon:'FAIL'},strongestChallenge:'Does render match canon?',dissent:[]});assert.equal(result.verdict,'HOLD');});
 test('Court without evidence gaps still does not claim external verification',()=>{const result=reviewCourt(sample(),{claims:[{id:'code',status:'VERIFIED',witnesses:[{class:'repository_source',ref:'a',root:'repo'}]}],strongestChallenge:'Check externally',dissent:[]});assert.equal(result.verdict,'READY_FOR_EXTERNAL_VERIFICATION');assert.equal(result.authority.grantsExecutionAuthority,false);});
 test('No first-class Council independence triggers HOLD',()=>{const packet=assembleCouncil({roundId:'test-2',goal:'Goal',sourceRef:'repo',independent:false,seats:[{id:'codex',finding:'Yes',evidenceRefs:[],dissent:[],providerState:'UNVERIFIED'}]});assert.equal(reviewCourt(packet,{claims:[{id:'code',status:'VERIFIED',witnesses:[{class:'repository_source',ref:'a',root:'repo'}]}],strongestChallenge:'Challenge',dissent:[]}).verdict,'HOLD');});
+// The fingerprint is integrity-only, NOT authentication. Adversaries can recompute
+// it after changing untrusted JSON, so every authority/transport/provider field
+// must be validated independently at the deserialization boundary.
+const resign = packet => {
+  const {fingerprint: _previous, ...record} = packet;
+  return {...record, fingerprint:fingerprint(record)};
+};
+test('reject recomputed packet that reassigns founder authority', () => {
+  const p=sample();p.authority.decisionOwner='provider';
+  assert.throws(()=>verifyCouncil(resign(p)),/authority|owner|shape|authorize/i);
+});
+test('reject recomputed packet with extra execution authority', () => {
+  const p=sample();p.authority.canMerge=true;
+  assert.throws(()=>verifyCouncil(resign(p)),/authority|unknown/i);
+});
+test('reject recomputed packet with forged live provider seat', () => {
+  const p=sample();p.findings[0].providerState='LIVE';
+  assert.throws(()=>verifyCouncil(resign(p)),/provider|seat/i);
+});
+test('reject recomputed packet with seat approval injection', () => {
+  const p=sample();p.findings[0].approved=true;
+  assert.throws(()=>verifyCouncil(resign(p)),/seat|unknown/i);
+});
+test('reject recomputed packet with transport delivery assertions', () => {
+  const p=sample();p.transport.deliveryStatus='DELIVERED';
+  assert.throws(()=>verifyCouncil(resign(p)),/transport|unknown/i);
+});
+test('reject recomputed packet with top-level execution claim', () => {
+  const p=sample();p.execution={authorized:true};
+  assert.throws(()=>verifyCouncil(resign(p)),/unknown|field|packet/i);
+});
+test('reject non-text Council seat dissent',()=>{
+  assert.throws(()=>assembleCouncil({roundId:'case-a',goal:'goal',sourceRef:'repo',seats:[{
+    id:'model',finding:'finding',evidenceRefs:[],dissent:[{execute:'deploy'}],providerState:'UNVERIFIED'
+  }]}),/dissent/i);
+});
+test('reject duplicated Court claims',()=>{
+  const witness={class:'repository_source',ref:'abc',root:'repo'};
+  assert.throws(()=>reviewCourt(sample(),{claims:[
+    {id:'same',status:'VERIFIED',witnesses:[witness]},
+    {id:'same',status:'VERIFIED',witnesses:[witness]}
+  ],strongestChallenge:'challenge',dissent:[]}),/duplicat|repeated|unique/i);
+});
+test('reject non-text Court dissent',()=>{
+  assert.throws(()=>reviewCourt(sample(),{claims:[{id:'code',status:'UNKNOWN',witnesses:[]}],
+    strongestChallenge:'challenge',dissent:[{mutate:'repo'}]}),/dissent/i);
+});
+test('do not confuse two witness roots referencing the same upstream evidence with independent proof',()=>{
+  const result=reviewCourt(sample(),{claims:[{id:'code',status:'VERIFIED',independent:true,witnesses:[
+    {class:'repository_source',ref:'same',root:'repo'},
+    {class:'ci_receipt',ref:'same',root:'ci'}
+  ]}],strongestChallenge:'Verify upstream reference',dissent:[]});
+  assert.equal(result.verdict,'HOLD');
+});
+
+test('Court visibly labels authoritative but uncorroborated single-witness claims',()=>{
+  const result=reviewCourt(sample(),{claims:[{id:'code',status:'VERIFIED',witnesses:[{class:'repository_source',ref:'sha',root:'repo'}]}],strongestChallenge:'Independently reproduce?',dissent:[]});
+  assert.equal(result.verdict,'READY_FOR_EXTERNAL_VERIFICATION');
+  assert.match(result.limits.join(' '),/single-witness/);
+});
+test('reject malformed claim identifiers and hidden witness authority',()=>{
+  assert.throws(()=>reviewCourt(sample(),{claims:[{id:{toString:()=> 'code'},status:'VERIFIED',witnesses:[]}],strongestChallenge:'challenge',dissent:[]}),/Invalid claim/);
+  assert.throws(()=>reviewCourt(sample(),{claims:[{id:'code',status:'VERIFIED',witnesses:[{class:'repository_source',ref:'sha',root:'repo',grantsExecutionAuthority:true}]}],strongestChallenge:'challenge',dissent:[]}),/witness field/);
+});

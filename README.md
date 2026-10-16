@@ -23,3 +23,8 @@ Source-controlled claim labels, `provider:` strings, simulated model roles or wi
 ## Gate
 
 This export is a pure local library. It does **not** establish that Council Bus callbacks, production provider calls, Court verdict publication, or return-to-origin are live. Complete end-to-end authenticated integration and visual/functional verification on the owning project before any such claim.
+## Security/authority note (October 2026)
+
+Council fingerprints are public recomputable SHA-256 integrity references, **not** signatures, authentication, provider attestation, independent-witness verification, or founder approval. The verifier therefore checks the complete packet schema and rejects unauthorized fields, forged `LIVE` seat labels, duplicate claim IDs, and unsupported authority/transport claims even when an attacker recalculates the fingerprint. Court records explicitly preserve single-witness limitations without treating a single authoritative source as automatically invalid.
+
+The Council Bus, tracked in Linear ENG-7, must separately verify inbound message origin, replay resistance, callback signatures, persistence, delivery acknowledgements, and supported return-to-origin. There is no embedded Bus transport or permission to update other repositories.
