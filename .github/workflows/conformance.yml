@@ -1,0 +1,24 @@
+name: Council Court conformance
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'test/**'
+      - '.github/workflows/conformance.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'test/**'
+      - '.github/workflows/conformance.yml'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --check src/council.mjs
+      - run: node --test test/*.test.mjs

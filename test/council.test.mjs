@@ -1,0 +1,17 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {assembleCouncil, verifyCouncil, reviewCourt, fingerprint} from '../src/council.mjs';
+const sample = () => assembleCouncil({roundId:'case-1',goal:'Check exact runtime and receipts',sourceRef:'repo@sha',independent:true,seats:[
+  {id:'codex',finding:'Check commit and CI',dissent:['Do not infer deployment'],evidenceRefs:['source:sha'],providerState:'UNVERIFIED'},
+  {id:'claude',finding:'Challenge user path',dissent:['Need browser'],evidenceRefs:[],providerState:'SIMULATED'}
+]});
+test('Council packet and verification preserve independent dissent and non-authority',()=>{const p=sample();assert.equal(verifyCouncil(p),true);assert.equal(p.authority.grantsExecutionAuthority,false);assert.equal(p.findings.length,2);});
+test('Canonical fingerprint order invariant',()=>assert.equal(fingerprint({a:1,b:2}),fingerprint({b:2,a:1})));
+test('Tampered Council findings fail closed',()=>{const p=sample();p.findings[0].finding='fake';assert.throws(()=>verifyCouncil(p),/mismatch/);});
+test('Duplicated seats rejected',()=>assert.throws(()=>assembleCouncil({roundId:'case-1',goal:'Goal',sourceRef:'source',seats:[{id:'a',finding:'a',evidenceRefs:[],dissent:[],providerState:'SIMULATED'},{id:'a',finding:'b',evidenceRefs:[],dissent:[],providerState:'SIMULATED'}]}),/Repeated seat/));
+test('Provider cannot simply claim LIVE',()=>assert.throws(()=>assembleCouncil({roundId:'case-1',goal:'Goal',sourceRef:'source',seats:[{id:'a',finding:'a',evidenceRefs:['provider:claim'],dissent:[],providerState:'LIVE'}]}),/provider label/));
+test('Court holds unknown and unwitnessed claims',()=>{const result=reviewCourt(sample(),{claims:[{id:'runtime',status:'UNKNOWN',witnesses:[]}],strongestChallenge:'Is there runtime proof?',dissent:[]});assert.equal(result.verdict,'HOLD');assert.equal(result.authority.grantsExecutionAuthority,false);});
+test('Court does not fake independent corroboration',()=>{const result=reviewCourt(sample(),{claims:[{id:'code',status:'VERIFIED',independent:true,witnesses:[{class:'repository_source',ref:'a',root:'same'},{class:'ci_receipt',ref:'b',root:'same'}]}],strongestChallenge:'Two citations but one root?',dissent:[]});assert.equal(result.verdict,'HOLD');assert.match(result.gaps.join(' '),/not independent/);});
+test('Source/runtime green with missing visual proof remains HOLD',()=>{const result=reviewCourt(sample(),{claims:[{id:'code',status:'VERIFIED',witnesses:[{class:'repository_source',ref:'a',root:'repo'}]}],launchGate:{destinationIdentity:'VERIFIED',functionalRuntime:'VERIFIED',visualCanon:'FAIL'},strongestChallenge:'Does render match canon?',dissent:[]});assert.equal(result.verdict,'HOLD');});
+test('Court without evidence gaps still does not claim external verification',()=>{const result=reviewCourt(sample(),{claims:[{id:'code',status:'VERIFIED',witnesses:[{class:'repository_source',ref:'a',root:'repo'}]}],strongestChallenge:'Check externally',dissent:[]});assert.equal(result.verdict,'READY_FOR_EXTERNAL_VERIFICATION');assert.equal(result.authority.grantsExecutionAuthority,false);});
+test('No first-class Council independence triggers HOLD',()=>{const packet=assembleCouncil({roundId:'test-2',goal:'Goal',sourceRef:'repo',independent:false,seats:[{id:'codex',finding:'Yes',evidenceRefs:[],dissent:[],providerState:'UNVERIFIED'}]});assert.equal(reviewCourt(packet,{claims:[{id:'code',status:'VERIFIED',witnesses:[{class:'repository_source',ref:'a',root:'repo'}]}],strongestChallenge:'Challenge',dissent:[]}).verdict,'HOLD');});
