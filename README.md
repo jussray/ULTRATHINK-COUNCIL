@@ -28,3 +28,14 @@ This export is a pure local library. It does **not** establish that Council Bus 
 Council fingerprints are public recomputable SHA-256 integrity references, **not** signatures, authentication, provider attestation, independent-witness verification, or founder approval. The verifier therefore checks the complete packet schema and rejects unauthorized fields, forged `LIVE` seat labels, duplicate claim IDs, and unsupported authority/transport claims even when an attacker recalculates the fingerprint. Court records explicitly preserve single-witness limitations without treating a single authoritative source as automatically invalid.
 
 The Council Bus, tracked in Linear ENG-7, must separately verify inbound message origin, replay resistance, callback signatures, persistence, delivery acknowledgements, and supported return-to-origin. There is no embedded Bus transport or permission to update other repositories.
+## Fail-closed test gate
+
+`node scripts/strict-tests.mjs` discovers every `test/**/*.test.{js,cjs,mjs}`
+file and rejects failed, skipped, cancelled, or TODO tests and missing/empty
+summaries. GitHub Actions runs this gate on **every** push, pull request, and
+manual dispatch, including documentation-only edits. The workflow uses Node 22
+and the Node 24-compatible `checkout@v5` / `setup-node@v5` actions.
+
+This is source/conformance coverage. A passing gate cannot certify a live
+Council Bus callback, authentic provider identity, visual launch, or founder
+approval. Keep those as separate external proof gates in Linear ENG-7.
