@@ -76,6 +76,13 @@ test('Do not allow callback URLs or origin credential injection', () => {
   assert.throws(()=>prepareCouncilBusHandoff({council,court,origin:{...origin(),route:'https://attacker.test'}}),/route/);
   assert.throws(()=>prepareCouncilBusHandoff({council,court,origin:{...origin(),credential:'secret'}}),/origin/);
 });
+test('A delivery-status edit without re-fingerprinting must fail closed', () => {
+  const {council,court}=fixture();
+  const handoff=prepareCouncilBusHandoff({council,court,origin:origin()});
+  handoff.deliveryStatus='DELIVERED';
+  assert.throws(()=>verifyCouncilBusHandoff({council,court,handoff}),/payload fingerprint/);
+});
+
 test('A re-fingerprinted delivery claim is rejected', () => {
   const {council,court}=fixture();
   const handoff=prepareCouncilBusHandoff({council,court,origin:origin()});
