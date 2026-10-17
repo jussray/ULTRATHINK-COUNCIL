@@ -56,8 +56,14 @@ export function verifyCouncilBusHandoff({council, court, handoff}) {
   verifyCourt(council, court);
   ensure(EXACT(handoff, HANDOFF_KEYS), 'Invalid Bus handoff fields');
   validateOrigin(handoff.origin);
+  // Bind the provided complete payload to its claimed digest BEFORE comparing
+  // with the deterministic expected handoff. Comparing expected to a claimed
+  // digest alone allowed an un-fingerprinted deliveryStatus edit to pass.
+  const {fingerprint: claimed, ...provided} = handoff;
+  ensure(fingerprint(provided) === claimed,
+    'Bus handoff payload fingerprint mismatch');
   const expected = prepareCouncilBusHandoff({council, court, origin:handoff.origin});
-  ensure(expected.fingerprint === handoff.fingerprint,
+  ensure(expected.fingerprint === claimed,
     'Bus handoff fingerprint or contract mismatch');
   // Both records are canonical-hashed. Key insertion order is not authority
   // and must not invalidate a legitimate JSON decode/re-encode.
