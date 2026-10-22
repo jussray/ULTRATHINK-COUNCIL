@@ -168,3 +168,74 @@ test('malformed stored transcript is rejected even if attacker recomputes its ha
   t.fingerprint=fingerprint(rest);
   assert.throws(()=>verifyLocalCouncilRound(t),/answer hash|mismatch/);
 });
+
+test('same round and same seat receive fresh request hashes for each attempt',async()=>{
+  const cfg={...basis(),seats:['codex']};
+  const a=await runLocalCouncilRound({...cfg,dispatch:mock});
+  const b=await runLocalCouncilRound({...cfg,dispatch:mock});
+  assert.notEqual(a.hops[0].attemptId,b.hops[0].attemptId);
+  assert.notEqual(a.hops[0].requestHash,b.hops[0].requestHash);
+  assert.equal(verifyLocalCouncilRound(a),true);
+  assert.equal(verifyLocalCouncilRound(b),true);
+});
+test('replayed response from the same interrupted round cannot clear a retry',async()=>{
+  let saved;
+  const first=await runLocalCouncilRound({...basis(),dispatch:async q=>{
+    if(q.seat==='codex')return mock(q);
+    saved={...await mock(q)};
+    return {status:'blocked',requestHash:q.requestHash};
+  }});
+  const resumed=await runLocalCouncilRound({...basis(),resumeFrom:first,dispatch:async q=>{
+    assert.equal(q.seat,'claude');
+    assert.notEqual(q.requestHash,saved.requestHash);
+    return saved;
+  }});
+  assert.equal(resumed.state,'interrupted');
+  assert.equal(resumed.interruption.reason,'INVALID_RESPONSE');
+  assert.equal(resumed.hops.length,1);
+});
+test('legacy round v1 is explicitly rejected rather than silently migrated',async()=>{
+  const old=await runLocalCouncilRound({...basis(),dispatch:mock});
+  const {fingerprint}=await import('../src/council.mjs');
+  old.contract='juss/portable-council-round@v1';
+  const {fingerprint:_prior,...data}=old;
+  old.fingerprint=fingerprint(data);
+  assert.throws(()=>verifyLocalCouncilRound(old),/Unknown round contract/);
+});
+test('recomputed round digest does not conceal a duplicated attempt identifier',async()=>{
+  const t=await runLocalCouncilRound({...basis(),dispatch:mock});
+  t.hops[1].attemptId=t.hops[0].attemptId;
+  const {fingerprint}=await import('../src/council.mjs');
+  const {fingerprint:_prior,...data}=t;
+  t.fingerprint=fingerprint(data);
+  assert.throws(()=>verifyLocalCouncilRound(t),/repeated Council attempt identity/);
+});
+test('timeout resume requires owner retry-safety evidence, without recalling finished seats',async()=>{
+  let timedOutSignal;
+  const first=await runLocalCouncilRound({...basis(),timeoutMs:5,dispatch:async q=>{
+    if(q.seat==='codex')return mock(q);
+    timedOutSignal=q.signal;
+    return new Promise(()=>{});
+  }});
+  assert.equal(first.interruption.reason,'TIMED_OUT');
+  assert.equal(timedOutSignal.aborted,true);
+  let called=0;
+  const dispatch=async q=>{called++;return mock(q)};
+  await assert.rejects(runLocalCouncilRound({...basis(),resumeFrom:first,dispatch}),/requires trusted owner/);
+  await assert.rejects(runLocalCouncilRound({...basis(),resumeFrom:first,dispatch,
+    verifyRetrySafety:async()=>false}),/not cleared/);
+  assert.equal(called,0);
+  let reason;
+  const resumed=await runLocalCouncilRound({...basis(),resumeFrom:first,dispatch,
+    verifyRetrySafety:async info=>{reason=info;return true;}});
+  assert.equal(reason.seat,'claude');
+  assert.equal(reason.priorFingerprint,first.fingerprint);
+  assert.equal(resumed.state,'complete');
+  assert.equal(called,1);
+});
+test('retry safety adapter exceptions are redacted and do not retry',async()=>{
+  const first=await runLocalCouncilRound({...basis(),timeoutMs:5,dispatch:async()=>new Promise(()=>{})});
+  await assert.rejects(runLocalCouncilRound({...basis(),resumeFrom:first,
+    verifyRetrySafety:async()=>{throw new Error('password=private');},
+    dispatch:mock}),/not cleared/);
+});
