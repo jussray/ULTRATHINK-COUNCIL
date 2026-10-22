@@ -30,3 +30,8 @@ Do not use generated testing keys in a deployed service. Never log, publish, or 
 ### Migration / rollback
 
 This code is supplied as a **stacked PR** on the signed-proof verifier branch. Merge PR #4 first only with its own current-head founder approval; then update this PR against the authorized latest main. No unconditional integration, deployment or physical backing selection is implied. Roll back by dropping this stacked PR and leaving FCR's existing mission/provider runtime unchanged.
+
+
+## Signed producer and origin client adapters
+
+The separate `bus/client.mjs` exposes `createLocalCouncilBusClient({url,origin,ingressPrivateKey,originPrivateKey,busPublicKey,now?})`. Its `submit` function signs a complete Council/Court/handoff plus bounded message, using the authorized producer key. `receiveAndAcknowledge(onMessage)` signs a fresh origin claim, verifies the independent Bus signature and exact handoff tuple, and returns the message to the owning application. It sends a signed origin ACK **only after** `onMessage` returns exactly `true`. A handler failure/false leaves the delivery unacknowledged for another attempt. This is an app-integration seam, not evidence that ChatGPT itself can receive background messages or persist/see them. The adapter restricts transport to loopback HTTP to avoid insecure automatic remote routing; production requires separately authorized TLS, key management and origin identity binding. Tests demonstrate this with ephemeral keys and an actual loopback HTTP service.

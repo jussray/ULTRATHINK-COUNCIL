@@ -22,5 +22,6 @@ jobs:
       - run: node --check bus/localBus.mjs
       - run: node --check bus/http.mjs
       - run: node --check bus/server.mjs
+      - run: node --check bus/client.mjs
       - run: node --check scripts/strict-tests.mjs
       - run: node scripts/strict-tests.mjs
