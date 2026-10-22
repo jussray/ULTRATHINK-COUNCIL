@@ -6,13 +6,15 @@
  * database, authenticated sender or delivery confirmation. It cannot prove
  * that a real Council participant answered.
  */
-import {createHash} from 'node:crypto';
+import {createHash, randomBytes} from 'node:crypto';
 import {assembleCouncil, fingerprint, reviewCourt, verifyCouncil, verifyCourt} from './council.mjs';
 import {prepareCouncilBusHandoff, verifyCouncilBusHandoff} from './busHandoff.mjs';
 
-export const LOCAL_ROUND_CONTRACT = 'juss/portable-council-round@v1';
+// v2 intentionally refuses v1 transcripts lacking per-attempt replay binding.
+export const LOCAL_ROUND_CONTRACT = 'juss/portable-council-round@v2';
 const ID = /^[a-z][a-z0-9-]{0,79}$/;
 const SHA = /^[a-f0-9]{64}$/;
+const ATTEMPT_ID = /^[a-f0-9]{32}$/;
 const STATE = new Set(['UNVERIFIED', 'SIMULATED']);
 const TEXT = value => typeof value === 'string' && value.trim().length > 0;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -33,7 +35,7 @@ const boundedStrings = (value,maxCount,maxChars) =>
   Array.isArray(value) && value.length <= maxCount &&
   value.every(item => bounded(item,maxChars));
 const digest = value => createHash('sha256').update(value, 'utf8').digest('hex');
-const hopFields = ['index','seat','requestHash','contextHash','answer','answerHash',
+const hopFields = ['index','seat','attemptId','requestHash','contextHash','answer','answerHash',
   'responseHash','evidenceRefs','dissent','providerState','liveProviderEvidence','completedAt'];
 const transcriptFields = ['contract','roundId','goal','sourceRef','seedHash','seats',
   'hops','state','nextSeatIndex','interruption','fingerprint'];
@@ -54,8 +56,8 @@ function checkConfig(input) {
     (Number.isSafeInteger(input.timeoutMs) && input.timeoutMs >= 1 &&
       input.timeoutMs <= ROUND_LIMITS.maxTimeoutMs), 'Invalid seat timeout');
 }
-function requestHash({roundId,goal,sourceRef,index,seat,contextHash}) {
-  return fingerprint({contract:'juss/portable-round-request@v1',roundId,goal,sourceRef,index,seat,contextHash});
+function requestHash({roundId,goal,sourceRef,index,seat,contextHash,attemptId}) {
+  return fingerprint({contract:'juss/portable-round-request@v2',roundId,goal,sourceRef,index,seat,contextHash,attemptId});
 }
 function responseHash(hop) {
   return fingerprint({contract:'juss/portable-round-response@v1',seat:hop.seat,
@@ -85,11 +87,15 @@ export function verifyLocalCouncilRound(transcript) {
     new Set(body.seats).size === body.seats.length, 'Invalid round seats');
   requireCondition(Array.isArray(body.hops) && body.hops.length <= body.seats.length, 'Invalid round hops');
   let contextHash = body.seedHash;
+  const attempts = new Set();
   body.hops.forEach((hop, index) => {
     exact(hop, hopFields, 'hop');
     requireCondition(hop.index === index && hop.seat === body.seats[index] &&
       hop.contextHash === contextHash, 'Council hop lineage mismatch');
-    requireCondition(hop.requestHash === requestHash({...body,index,seat:hop.seat,contextHash}),
+    requireCondition(typeof hop.attemptId === 'string' && ATTEMPT_ID.test(hop.attemptId) &&
+      !attempts.has(hop.attemptId), 'Invalid or repeated Council attempt identity');
+    attempts.add(hop.attemptId);
+    requireCondition(hop.requestHash === requestHash({...body,index,seat:hop.seat,contextHash,attemptId:hop.attemptId}),
       'Council request hash mismatch');
     requireCondition(bounded(hop.answer,ROUND_LIMITS.maxTextChars) &&
       hop.answerHash === digest(hop.answer),
@@ -134,6 +140,38 @@ export async function runLocalCouncilRound(input) {
     requireCondition(previous.roundId === input.roundId && previous.goal === input.goal &&
       previous.sourceRef === input.sourceRef && previous.seedHash === digest(input.seed) &&
       JSON.stringify(previous.seats) === JSON.stringify(input.seats), 'Resume identity or roster mismatch');
+    if (previous.interruption.reason === 'TIMED_OUT') {
+      // The prior adapter could still be working despite AbortSignal. Never
+      // silently send an additional provider request after an uncertain result.
+      requireCondition(typeof input.verifyRetrySafety === 'function',
+        'Timed-out retry requires trusted owner verification');
+      let safe = false;
+      const retryController = new AbortController();
+      const retryDeadline = Symbol('retry-safety-deadline');
+      let retryTimer;
+      try {
+        const result = await Promise.race([
+          Promise.resolve().then(() => input.verifyRetrySafety(Object.freeze({
+            roundId:previous.roundId,sourceRef:previous.sourceRef,
+            seat:previous.interruption.seat,priorFingerprint:previous.fingerprint,
+            nextSeatIndex:previous.nextSeatIndex,
+            signal:retryController.signal,
+          }))),
+          new Promise(resolve => {
+            retryTimer = setTimeout(() => {
+              retryController.abort();
+              resolve(retryDeadline);
+            }, input.timeoutMs ?? ROUND_LIMITS.defaultTimeoutMs);
+          }),
+        ]);
+        safe = result === true;
+      } catch {
+        // Never persist verifier exceptions: they may include sensitive data.
+      } finally {
+        clearTimeout(retryTimer);
+      }
+      requireCondition(safe, 'Timed-out retry is not cleared by owning runtime');
+    }
   }
   const hops = previous ? structuredClone(previous.hops) : [];
   let context = hops.length ? hops[hops.length - 1].answer : input.seed;
@@ -143,8 +181,11 @@ export async function runLocalCouncilRound(input) {
     const contextHash = digest(context);
     const expectedHash = hops.length ? hops[hops.length - 1].answerHash : digest(input.seed);
     requireCondition(contextHash === expectedHash, 'Round context changed across hops');
+    // Generate a new, unpredictable identity for each actual dispatch attempt,
+    // including a retry of the same seat after interruption.
+    const attemptId = randomBytes(16).toString('hex');
     const hash = requestHash({roundId:input.roundId,goal:input.goal,
-      sourceRef:input.sourceRef,index:i,seat,contextHash});
+      sourceRef:input.sourceRef,index:i,seat,contextHash,attemptId});
     let response;
     const controller = new AbortController();
     const timedOut = Symbol('seat-timed-out');
@@ -155,7 +196,7 @@ export async function runLocalCouncilRound(input) {
       const result = await Promise.race([
         Promise.resolve().then(() => input.dispatch(Object.freeze({
           roundId:input.roundId,seat,index:i,goal:input.goal,sourceRef:input.sourceRef,
-          context,contextHash,requestHash:hash,signal:controller.signal,
+          context,contextHash,attemptId,requestHash:hash,signal:controller.signal,
         }))),
         new Promise(resolve => {
           timer=setTimeout(() => {controller.abort();resolve(timedOut);},
@@ -194,7 +235,7 @@ export async function runLocalCouncilRound(input) {
       break;
     }
     const hop = {
-      index:i,seat,requestHash:hash,contextHash,answer:response.answer,
+      index:i,seat,attemptId,requestHash:hash,contextHash,answer:response.answer,
       answerHash:digest(response.answer),responseHash:'',
       evidenceRefs:[...response.evidenceRefs ?? []],dissent:[...response.dissent ?? []],
       providerState:response.providerState,liveProviderEvidence:false,
