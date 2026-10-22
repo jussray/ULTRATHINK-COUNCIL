@@ -8,7 +8,7 @@ import {assembleCouncil,reviewCourt} from '../src/council.mjs';
 import {prepareCouncilBusHandoff} from '../src/busHandoff.mjs';
 import {createLocalCouncilBus} from '../bus/localBus.mjs';
 import {createLocalCouncilBusServer} from '../bus/http.mjs';
-import {createLocalCouncilBusClient} from '../bus/client.mjs';
+import {createLocalCouncilBusProducer,createLocalCouncilBusOrigin} from '../bus/client.mjs';
 
 const NOW=Date.parse('2026-10-22T12:00:01.000Z');
 const ORIGIN={agent:'chatgpt',route:'founder-relay',threadId:'round-one',correlationId:'case-one'};
@@ -34,12 +34,12 @@ async function setup(){
     server=createLocalCouncilBusServer(bus);
   await new Promise(done=>server.listen(0,'127.0.0.1',done));
   const url='http://127.0.0.1:'+server.address().port+'/';
-  const client=createLocalCouncilBusClient({url,origin:ORIGIN,
-    ingressPrivateKey:fx.keys.ingress.privateKey,
+  const producer=createLocalCouncilBusProducer({url,origin:ORIGIN,
+    ingressPrivateKey:fx.keys.ingress.privateKey,now:()=>NOW});
+  const client=createLocalCouncilBusOrigin({url,origin:ORIGIN,
     originPrivateKey:fx.keys.origin.privateKey,
-    busPublicKey:fx.keys.bus.publicKey,
-    now:()=>NOW});
-  return {fx,bus,client,url,cleanup:async()=>{
+    busPublicKey:fx.keys.bus.publicKey,now:()=>NOW});
+  return {fx,bus,client,producer,url,cleanup:async()=>{
     await new Promise(done=>server.close(done));
     bus.close();fx.cleanup();
   }};
@@ -47,7 +47,7 @@ async function setup(){
 test('producer signs a Council result and origin verifies, handles and ACKs it',async()=>{
   const x=await setup();
   try{
-    assert.equal((await x.client.submit({council:x.fx.council,court:x.fx.court,
+    assert.equal((await x.producer.submit({council:x.fx.council,court:x.fx.court,
       handoff:x.fx.handoff,reply:'Reply from tested local Council reference.'})).state,'QUEUED');
     let received;
     const result=await x.client.receiveAndAcknowledge(async m=>{
@@ -63,7 +63,7 @@ test('producer signs a Council result and origin verifies, handles and ACKs it',
 test('origin that does not confirm handling cannot acknowledge',async()=>{
   const x=await setup();
   try{
-    await x.client.submit({council:x.fx.council,court:x.fx.court,
+    await x.producer.submit({council:x.fx.council,court:x.fx.court,
       handoff:x.fx.handoff,reply:'Unread local message.'});
     assert.equal((await x.client.receiveAndAcknowledge(async()=>false)).state,'NOT_ACKNOWLEDGED');
     assert.equal((await x.client.receiveAndAcknowledge(async()=>true)).state,'ACKNOWLEDGED');
@@ -72,7 +72,7 @@ test('origin that does not confirm handling cannot acknowledge',async()=>{
 test('handler exception preserves unacknowledged delivery for retry',async()=>{
   const x=await setup();
   try{
-    await x.client.submit({council:x.fx.council,court:x.fx.court,
+    await x.producer.submit({council:x.fx.council,court:x.fx.court,
       handoff:x.fx.handoff,reply:'Not safely handled.'});
     await assert.rejects(x.client.receiveAndAcknowledge(async()=>{throw Error('display failed');}),/display failed/);
     assert.equal((await x.client.receiveAndAcknowledge(async()=>true)).state,'ACKNOWLEDGED');
@@ -81,9 +81,8 @@ test('handler exception preserves unacknowledged delivery for retry',async()=>{
 test('client will not use an arbitrary remote address or leak keys',()=>{
   const fx=signedSetup();
   try{
-    assert.throws(()=>createLocalCouncilBusClient({
+    assert.throws(()=>createLocalCouncilBusOrigin({
       url:'https://malicious.example/',origin:ORIGIN,
-      ingressPrivateKey:fx.keys.ingress.privateKey,
       originPrivateKey:fx.keys.origin.privateKey,busPublicKey:fx.keys.bus.publicKey,
     }),/LOCAL_URL_ONLY/);
   }finally{fx.cleanup();}
@@ -91,11 +90,10 @@ test('client will not use an arbitrary remote address or leak keys',()=>{
 test('wrong Bus verifier key must stop message handling and ACK',async()=>{
   const x=await setup();
   try{
-    await x.client.submit({council:x.fx.council,court:x.fx.court,
+    await x.producer.submit({council:x.fx.council,court:x.fx.court,
       handoff:x.fx.handoff,reply:'Security test.'});
     const fakeBus=generateKeyPairSync('ed25519');
-    const wrong=createLocalCouncilBusClient({url:x.url,origin:ORIGIN,
-      ingressPrivateKey:x.fx.keys.ingress.privateKey,
+    const wrong=createLocalCouncilBusOrigin({url:x.url,origin:ORIGIN,
       originPrivateKey:x.fx.keys.origin.privateKey,
       busPublicKey:fakeBus.publicKey,now:()=>NOW});
     let handled=false;
@@ -108,7 +106,7 @@ test('wrong Bus verifier key must stop message handling and ACK',async()=>{
 test('tampered plaintext reply is rejected before onMessage or ACK',async()=>{
   const x=await setup();
   try{
-    await x.client.submit({council:x.fx.council,court:x.fx.court,
+    await x.producer.submit({council:x.fx.council,court:x.fx.court,
       handoff:x.fx.handoff,reply:'Original authorized response.'});
     const tamperFetch=async (url,options)=>{
       const response=await fetch(url,options);
@@ -119,9 +117,8 @@ test('tampered plaintext reply is rejected before onMessage or ACK',async()=>{
         status:response.status,headers:{'content-type':'application/json'},
       });
     };
-    const altered=createLocalCouncilBusClient({
-      url:x.url,origin:ORIGIN,ingressPrivateKey:x.fx.keys.ingress.privateKey,
-      originPrivateKey:x.fx.keys.origin.privateKey,busPublicKey:x.fx.keys.bus.publicKey,
+    const altered=createLocalCouncilBusOrigin({
+      url:x.url,origin:ORIGIN,originPrivateKey:x.fx.keys.origin.privateKey,busPublicKey:x.fx.keys.bus.publicKey,
       now:()=>NOW,fetchImpl:tamperFetch,
     });
     let handled=false;
@@ -134,7 +131,7 @@ test('tampered plaintext reply is rejected before onMessage or ACK',async()=>{
 test('missing or swapped signed-content attestation fails closed',async()=>{
   const x=await setup();
   try{
-    await x.client.submit({council:x.fx.council,court:x.fx.court,
+    await x.producer.submit({council:x.fx.council,court:x.fx.court,
       handoff:x.fx.handoff,reply:'Another authenticated response.'});
     const incompleteFetch=async(url,options)=>{
       const response=await fetch(url,options);
@@ -143,9 +140,8 @@ test('missing or swapped signed-content attestation fails closed',async()=>{
       delete payload.signedContent;
       return new Response(JSON.stringify(payload),{status:response.status});
     };
-    const missing=createLocalCouncilBusClient({
-      url:x.url,origin:ORIGIN,ingressPrivateKey:x.fx.keys.ingress.privateKey,
-      originPrivateKey:x.fx.keys.origin.privateKey,busPublicKey:x.fx.keys.bus.publicKey,
+    const missing=createLocalCouncilBusOrigin({
+      url:x.url,origin:ORIGIN,originPrivateKey:x.fx.keys.origin.privateKey,busPublicKey:x.fx.keys.bus.publicKey,
       now:()=>NOW,fetchImpl:incompleteFetch,
     });
     let callbacks=0;
@@ -160,9 +156,8 @@ test('oversized Bus response fails before a message is handled',async()=>{
   try{
     const inflatedFetch=async()=>new Response(JSON.stringify({payload:'x'.repeat(70000)}),
       {status:200,headers:{'content-type':'application/json'}});
-    const huge=createLocalCouncilBusClient({
-      url:x.url,origin:ORIGIN,ingressPrivateKey:x.fx.keys.ingress.privateKey,
-      originPrivateKey:x.fx.keys.origin.privateKey,busPublicKey:x.fx.keys.bus.publicKey,
+    const huge=createLocalCouncilBusOrigin({
+      url:x.url,origin:ORIGIN,originPrivateKey:x.fx.keys.origin.privateKey,busPublicKey:x.fx.keys.bus.publicKey,
       now:()=>NOW,fetchImpl:inflatedFetch,
     });
     let handled=false;
@@ -181,12 +176,54 @@ test('stalled HTTP requests abort within the configured bounded deadline',async(
         aborted=true;reject(Error('ABORTED'));
       },{once:true});
     });
-    const client=createLocalCouncilBusClient({
-      url:x.url,origin:ORIGIN,ingressPrivateKey:x.fx.keys.ingress.privateKey,
-      originPrivateKey:x.fx.keys.origin.privateKey,busPublicKey:x.fx.keys.bus.publicKey,
+    const client=createLocalCouncilBusOrigin({
+      url:x.url,origin:ORIGIN,originPrivateKey:x.fx.keys.origin.privateKey,busPublicKey:x.fx.keys.bus.publicKey,
       now:()=>NOW,fetchImpl:stalled,timeoutMs:100,
     });
     await assert.rejects(client.receiveAndAcknowledge(async()=>true),/ABORTED/);
     assert.equal(aborted,true);
   }finally{await x.cleanup();}
+});
+
+test('origin configuration refuses producer secrets and mixed roles',()=>{
+  const fx=signedSetup();
+  try{
+    assert.throws(()=>createLocalCouncilBusOrigin({
+      url:'http://127.0.0.1:8789/',origin:ORIGIN,
+      ingressPrivateKey:fx.keys.ingress.privateKey,
+      originPrivateKey:fx.keys.origin.privateKey,
+      busPublicKey:fx.keys.bus.publicKey,
+    }),/FORBIDDEN_ROLE_KEYS/);
+    assert.throws(()=>createLocalCouncilBusProducer({
+      url:'http://127.0.0.1:8789/',origin:ORIGIN,
+      ingressPrivateKey:fx.keys.ingress.privateKey,
+      originPrivateKey:fx.keys.origin.privateKey,
+    }),/FORBIDDEN_ROLE_KEYS/);
+    const producer=createLocalCouncilBusProducer({
+      url:'http://127.0.0.1:8789/',origin:ORIGIN,
+      ingressPrivateKey:fx.keys.ingress.privateKey,
+    });
+    const receiver=createLocalCouncilBusOrigin({
+      url:'http://127.0.0.1:8789/',origin:ORIGIN,
+      originPrivateKey:fx.keys.origin.privateKey,
+      busPublicKey:fx.keys.bus.publicKey,
+    });
+    assert.deepEqual(Object.keys(producer),['submit']);
+    assert.deepEqual(Object.keys(receiver),['receiveAndAcknowledge']);
+  }finally{fx.cleanup();}
+});
+test('uncooperative HTTP implementation cannot trap the caller past deadline',async()=>{
+  const fx=signedSetup();
+  try{
+    const producer=createLocalCouncilBusProducer({
+      url:'http://127.0.0.1:8789/',origin:ORIGIN,
+      ingressPrivateKey:fx.keys.ingress.privateKey,timeoutMs:100,
+      fetchImpl:()=>new Promise(()=>{}),
+    });
+    const error=await producer.submit({
+      council:fx.council,court:fx.court,handoff:fx.handoff,
+      reply:'Do not indefinitely await an uncooperative client.',
+    }).catch(e=>e);
+    assert.match(error.message,/BUS_TIMEOUT/);
+  }finally{fx.cleanup();}
 });

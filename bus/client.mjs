@@ -1,5 +1,5 @@
 /**
- * Loopback-only clients for the standalone Council Bus reference.
+ * Role-separated loopback clients for the standalone Council Bus reference.
  * A host application's onMessage callback must confirm handling before ACK.
  * This is NOT a ChatGPT connector or evidence of human-visible delivery.
  */
@@ -66,31 +66,40 @@ function checkSignedContent(record,key,delivery,handoff,origin,message){
   assert(verify(null,Buffer.from(fingerprint(payload),'hex'),key,decoded),
     'UNVERIFIED_BUS_CONTENT_SIGNATURE');
 }
-export function createLocalCouncilBusClient({
-  url,origin,ingressPrivateKey,originPrivateKey,busPublicKey,
-  now=()=>Date.now(),fetchImpl=globalThis.fetch,timeoutMs=5000,
-}){
-  const u=new URL(url);
-  assert(u.protocol==='http:'&&u.hostname==='127.0.0.1'&&u.pathname==='/'&&
-    !u.username&&!u.password&&!u.search&&!u.hash,'LOCAL_URL_ONLY');
+
+function roleConfig(options,role){
+  assert(options&&typeof options==='object'&&!Array.isArray(options),'INVALID_CLIENT_CONFIGURATION');
+  const shared=['url','origin','now','fetchImpl','timeoutMs'];
+  const allowed=role==='producer'?[...shared,'ingressPrivateKey']:
+    [...shared,'originPrivateKey','busPublicKey'];
+  assert(Object.keys(options).every(key=>allowed.includes(key)),'FORBIDDEN_ROLE_KEYS');
+  const {origin}=options;
   assert(equalOrigin(origin,origin),'INVALID_ORIGIN');
   assert(ORIGIN_FIELDS.every(k=>typeof origin[k]==='string'&&
     /^[a-z][a-z0-9-]{0,79}$/.test(origin[k])),'INVALID_ORIGIN');
+  return origin;
+}
+function createTransport({url,now=()=>Date.now(),
+  fetchImpl=globalThis.fetch,timeoutMs=5000}){
+  const u=new URL(url);
+  assert(u.protocol==='http:'&&u.hostname==='127.0.0.1'&&u.pathname==='/'&&
+    !u.username&&!u.password&&!u.search&&!u.hash,'LOCAL_URL_ONLY');
   assert(typeof now==='function'&&typeof fetchImpl==='function'&&
     Number.isSafeInteger(timeoutMs)&&timeoutMs>=100&&timeoutMs<=30000,
     'INVALID_CLIENT_CONFIGURATION');
-  const ingress=getKey(ingressPrivateKey,'private');
-  const originSigner=getKey(originPrivateKey,'private');
-  const busVerifier=getKey(busPublicKey,'public');
-  assert(!createPublicKey(ingress).export({format:'der',type:'spki'}).equals(
-    createPublicKey(originSigner).export({format:'der',type:'spki'})),'DISTINCT_KEYS_REQUIRED');
   async function post(path,payload){
     const controller=new AbortController();
-    const timer=setTimeout(()=>controller.abort(),timeoutMs);
-    try{
+    let timer;
+    const deadline=new Promise((_resolve,reject)=>{
+      timer=setTimeout(()=>{
+        reject(Error('BUS_TIMEOUT'));
+        controller.abort();
+      },timeoutMs);
+    });
+    const work=async()=>{
       const response=await fetchImpl(u.href.replace(/\/$/,'')+path,{
-        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),
-        redirect:'error',signal:controller.signal,
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload),redirect:'error',signal:controller.signal,
       });
       assert(response.ok,'BUS_HTTP_'+response.status);
       assert(response.body,'INVALID_BUS_RESPONSE');
@@ -109,10 +118,20 @@ export function createLocalCouncilBusClient({
       assert(parsed&&typeof parsed==='object'&&!Array.isArray(parsed),
         'INVALID_BUS_RESPONSE');
       return parsed;
-    }finally{
-      clearTimeout(timer);
-    }
+    };
+    try{return await Promise.race([work(),deadline]);}
+    finally{clearTimeout(timer);}
   }
+  return {post,now};
+}
+/**
+ * Producer authority only: this client never receives origin signing material.
+ * The actual operator must keep producer and origin keys in separate processes.
+ */
+export function createLocalCouncilBusProducer(options){
+  const origin=roleConfig(options,'producer');
+  const {post,now}=createTransport(options);
+  const ingress=getKey(options.ingressPrivateKey,'private');
   async function submit({council,court,handoff,reply}){
     verifyCouncilBusHandoff({council,court,handoff});
     assert(equalOrigin(handoff.origin,origin),'ORIGIN_MISMATCH');
@@ -124,6 +143,18 @@ export function createLocalCouncilBusClient({
       'INVALID_PUBLISH_RECEIPT');
     return result;
   }
+  return Object.freeze({submit});
+}
+/**
+ * Origin authority only: this client never receives the producer signing key.
+ * ACK remains gated on verified Bus metadata + signed message content and
+ * successful owning-application handling (not a promise of human visibility).
+ */
+export function createLocalCouncilBusOrigin(options){
+  const origin=roleConfig(options,'origin');
+  const {post,now}=createTransport(options);
+  const originSigner=getKey(options.originPrivateKey,'private');
+  const busVerifier=getKey(options.busPublicKey,'public');
   async function receiveAndAcknowledge(onMessage){
     assert(typeof onMessage==='function','MESSAGE_HANDLER_REQUIRED');
     const claim=signRecord({contract:CLAIM,origin:{...origin},issuedAt:canonicalStamp(now),
@@ -140,7 +171,6 @@ export function createLocalCouncilBusClient({
     checkSignedBusReceipt(response.delivery,busVerifier,response.handoff,origin,now);
     checkSignedContent(response.signedContent,busVerifier,response.delivery,
       response.handoff,origin,response.message);
-    // A display or message-store failure MUST leave the delivery unacknowledged.
     const handled=await onMessage(Object.freeze({
       message:response.message,handoff:response.handoff,delivery:response.delivery,
     }));
@@ -153,5 +183,5 @@ export function createLocalCouncilBusClient({
       result.handoffFingerprint===response.handoff.fingerprint,'INVALID_ACK_CONFIRMATION');
     return Object.freeze({state:'ACKNOWLEDGED',handoffFingerprint:response.handoff.fingerprint});
   }
-  return Object.freeze({submit,receiveAndAcknowledge});
+  return Object.freeze({receiveAndAcknowledge});
 }

@@ -88,3 +88,8 @@ This library does not mint trusted keys, sign receipts, persist nonce/idempotenc
 ## Local authenticated return-to-origin reference (not deployed)
 
 A separately scoped `bus/` reference implements signed Council handoff intake, SQLite-backed idempotent storage, signed origin polling, Bus delivery receipts and distinct signed origin acknowledgments. Its HTTP listener **only binds to loopback**; it does not choose the Council federation's production backing or make ChatGPT respond automatically. Tests use ephemeral keys, private temporary DB directories and HTTP loopback. See [local Bus runtime and proof limits](docs/BUS_LOCAL_RUNTIME.md). Never store keys or replies in Git.
+
+
+### Bus credentials must stay separated
+
+The nonproduction Bus client exports **`createLocalCouncilBusProducer`** (submission signing only) and **`createLocalCouncilBusOrigin`** (Bus signature verification, polling and independently signed ACK only). The former must not receive origin credentials; the latter must not receive ingress credentials. Tests simulate both roles in one fixture, but deployed processes must use distinct identities and secret stores. The old combined client API is intentionally unavailable on stacked PR #5. See [Bus local runtime](docs/BUS_LOCAL_RUNTIME.md).
