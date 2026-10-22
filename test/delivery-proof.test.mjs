@@ -75,8 +75,8 @@ test('a recomputed fingerprint cannot rescue a forged delivery signature',()=>{
 });
 test('acknowledgment cannot reference different delivery or earlier delivery time',()=>{
   const f=fixtures();
-  const alteredAck=signRecord({...f.ack,deliveryFingerprint:'0'.repeat(64),
-    signature:undefined},f.agent.privateKey);
+  const {signature:oldSignature, ...ackPayload}=f.ack;
+  const alteredAck=signRecord({...ackPayload,deliveryFingerprint:'0'.repeat(64)},f.agent.privateKey);
   assert.throws(()=>verifyCouncilDeliveryEvidence({...validInput(f),ack:alteredAck}),/not bound to verified delivery/);
   const {signature:_,...payload}=f.ack;
   const before=signRecord({...payload,acknowledgedAt:'2026-10-22T11:59:59.000Z'},f.agent.privateKey);

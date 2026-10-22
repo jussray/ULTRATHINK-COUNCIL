@@ -37,7 +37,7 @@ function ensureOrigin(value, expected) {
 }
 function verifiedKey(key, label) {
   let parsed;
-  try { parsed = createPublicKey(key); } catch { throw new Error('Invalid '+label+' public key'); }
+  try { parsed = key?.type === 'public' && key?.asymmetricKeyType === 'ed25519' ? key : createPublicKey(key); } catch { throw new Error('Invalid '+label+' public key'); }
   requireFact(parsed.asymmetricKeyType === 'ed25519', 'Unsupported '+label+' key algorithm');
   return parsed;
 }
@@ -53,11 +53,11 @@ function verifyAttestation(record, key, label) {
 }
 function checkTime(stamp, now, maxAgeMs, label) {
   requireFact(typeof stamp === 'string' && stamp.length <= 40 &&
-    /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z$/.test(stamp),
+    /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(stamp),
     'Invalid '+label+' timestamp');
   const parsed = Date.parse(stamp);
-  requireFact(Number.isFinite(parsed) && new Date(parsed).toISOString() ===
-    new Date(stamp).toISOString(), 'Invalid '+label+' timestamp');
+  requireFact(Number.isFinite(parsed) && new Date(parsed).toISOString() === stamp,
+    'Invalid '+label+' timestamp');
   requireFact(parsed >= now-maxAgeMs && parsed <= now+MAX_FUTURE_SKEW_MS,
     'Stale or future '+label+' receipt');
   return parsed;
