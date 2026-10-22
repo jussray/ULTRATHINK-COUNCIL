@@ -153,3 +153,34 @@ test('claim nonces remain rejected across SQLite restarts',()=>{
     assert.throws(()=>client.claim(nonce),/REPLAYED_CLAIM/);
   }finally{client.close();f.cleanup();}
 });
+
+test('expired unacknowledged delivery is reissued and can be ACKed after restart',()=>{
+  const f=fixture();let client=createLocalCouncilBus(f.config);
+  try{
+    client.publish(f.submission);
+    const old=client.claim(f.claim('b'.repeat(32)));
+    const later=NOW+6*60*1000;
+    f.setTime(later);
+    client.close();
+    client=createLocalCouncilBus(f.config);
+    const fresh=signature({
+      contract:'juss/council-bus-claim@v1',origin:ORIGIN,
+      issuedAt:new Date(later).toISOString(),nonce:'c'.repeat(32),
+    },f.origin.privateKey);
+    const retry=client.claim(fresh);
+    assert.equal(retry.state,'DELIVERY_ATTEMPTED');
+    assert.notEqual(retry.delivery.signature,old.delivery.signature);
+    assert.notEqual(fingerprint(retry.delivery),fingerprint(old.delivery));
+    assert.equal(retry.signedContent.deliveryFingerprint,fingerprint(retry.delivery));
+    assert.equal(retry.message,old.message);
+    const ack=signature({
+      contract:'juss/council-origin-ack@v1',
+      handoffFingerprint:f.handoff.fingerprint,
+      deliveryFingerprint:fingerprint(retry.delivery),
+      origin:ORIGIN,state:'ACKNOWLEDGED',
+      acknowledgedAt:new Date(later).toISOString(),
+    },f.origin.privateKey);
+    assert.equal(client.acknowledge(ack).state,'ACKNOWLEDGED');
+    assert.equal(client.status().pending,0);
+  }finally{client.close();f.cleanup();}
+});

@@ -105,7 +105,7 @@ export function createLocalCouncilBus({
   const insert=db.prepare('INSERT INTO items(fingerprint,idempotency,origin,handoff,message,created) VALUES(?,?,?,?,?,?)');
   const count=db.prepare('SELECT COUNT(*) AS count FROM items WHERE ack IS NULL');
   const next=db.prepare('SELECT * FROM items WHERE origin=? AND ack IS NULL ORDER BY created ASC,fingerprint ASC LIMIT 1');
-  const deliverySave=db.prepare('UPDATE items SET delivery=? WHERE fingerprint=? AND delivery IS NULL');
+  const deliverySave=db.prepare('UPDATE items SET delivery=? WHERE fingerprint=? AND ack IS NULL');
   const ackSave=db.prepare('UPDATE items SET ack=? WHERE fingerprint=? AND ack IS NULL');
   const nonceInsert=db.prepare('INSERT INTO claims(nonce,received) VALUES(?,?)');
   const nonceCleanup=db.prepare('DELETE FROM claims WHERE received<?');
@@ -149,7 +149,11 @@ export function createLocalCouncilBus({
       const row=next.get(key);
       if(!row)return {state:'EMPTY'};
       let delivered=row.delivery===null?null:JSON.parse(row.delivery);
-      if(!delivered){
+      // An unacknowledged delivery can outlive the client's 5-minute
+      // receipt freshness window. Renew its signed receipt on a new,
+      // authenticated claim rather than leaving the queue unrecoverable.
+      // An older pending ACK then becomes invalid, requiring origin retry.
+      if(!delivered||time-Date.parse(delivered.deliveredAt)>MAX_CLOCK_DRIFT){
         const payload={contract:DELIVERY,handoffFingerprint:row.fingerprint,
           idempotencyKey:row.idempotency,origin:JSON.parse(row.origin),state:'DELIVERED',
           deliveredAt:new Date(time).toISOString()};
