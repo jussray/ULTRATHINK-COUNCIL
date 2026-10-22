@@ -21,7 +21,17 @@ const exact = (value, keys, label) => {
   requireCondition(object(value) && Object.keys(value).length === keys.length &&
     Object.keys(value).every(key => keys.includes(key)), `Invalid ${label} fields`);
 };
-const strings = value => Array.isArray(value) && value.every(TEXT);
+// Budgeted local rounds defend the owning runtime from malformed/unbounded adapter data.
+export const ROUND_LIMITS = Object.freeze({
+  maxSeats: 8, maxGoalChars: 4096, maxSourceChars: 2048,
+  maxTextChars: 32768, maxEvidenceRefs: 32, maxDissent: 16,
+  maxEvidenceChars: 2048, maxDissentChars: 2048,
+  defaultTimeoutMs: 30000, maxTimeoutMs: 60000,
+});
+const bounded = (value,max) => TEXT(value) && value.length <= max;
+const boundedStrings = (value,maxCount,maxChars) =>
+  Array.isArray(value) && value.length <= maxCount &&
+  value.every(item => bounded(item,maxChars));
 const digest = value => createHash('sha256').update(value, 'utf8').digest('hex');
 const hopFields = ['index','seat','requestHash','contextHash','answer','answerHash',
   'responseHash','evidenceRefs','dissent','providerState','liveProviderEvidence','completedAt'];
@@ -31,12 +41,18 @@ const transcriptFields = ['contract','roundId','goal','sourceRef','seedHash','se
 function checkConfig(input) {
   requireCondition(object(input), 'Round input required');
   requireCondition(typeof input.roundId === 'string' && ID.test(input.roundId), 'Invalid round ID');
-  requireCondition(TEXT(input.goal) && TEXT(input.sourceRef) && TEXT(input.seed), 'Missing goal/source/seed');
+  requireCondition(bounded(input.goal,ROUND_LIMITS.maxGoalChars) &&
+    bounded(input.sourceRef,ROUND_LIMITS.maxSourceChars) &&
+    bounded(input.seed,ROUND_LIMITS.maxTextChars), 'Missing or oversized goal/source/seed');
   requireCondition(Array.isArray(input.seats) && input.seats.length > 0 &&
+    input.seats.length <= ROUND_LIMITS.maxSeats &&
     input.seats.every(seat => typeof seat === 'string' && ID.test(seat) && seat !== 'fcr') &&
     new Set(input.seats).size === input.seats.length, 'Invalid or duplicate Council seat');
   requireCondition(typeof input.dispatch === 'function', 'An explicitly supplied dispatch adapter is required');
   requireCondition(input.clock === undefined || typeof input.clock === 'function', 'Invalid clock');
+  requireCondition(input.timeoutMs === undefined ||
+    (Number.isSafeInteger(input.timeoutMs) && input.timeoutMs >= 1 &&
+      input.timeoutMs <= ROUND_LIMITS.maxTimeoutMs), 'Invalid seat timeout');
 }
 function requestHash({roundId,goal,sourceRef,index,seat,contextHash}) {
   return fingerprint({contract:'juss/portable-round-request@v1',roundId,goal,sourceRef,index,seat,contextHash});
@@ -60,8 +76,11 @@ export function verifyLocalCouncilRound(transcript) {
   requireCondition(typeof claimed === 'string' && claimed === fingerprint(body), 'Round fingerprint mismatch');
   requireCondition(body.contract === LOCAL_ROUND_CONTRACT, 'Unknown round contract');
   requireCondition(typeof body.roundId === 'string' && ID.test(body.roundId) &&
-    TEXT(body.goal) && TEXT(body.sourceRef) && SHA.test(body.seedHash), 'Invalid round identity');
+    bounded(body.goal,ROUND_LIMITS.maxGoalChars) &&
+    bounded(body.sourceRef,ROUND_LIMITS.maxSourceChars) &&
+    SHA.test(body.seedHash), 'Invalid round identity');
   requireCondition(Array.isArray(body.seats) && body.seats.length > 0 &&
+    body.seats.length <= ROUND_LIMITS.maxSeats &&
     body.seats.every(seat => typeof seat === 'string' && ID.test(seat) && seat !== 'fcr') &&
     new Set(body.seats).size === body.seats.length, 'Invalid round seats');
   requireCondition(Array.isArray(body.hops) && body.hops.length <= body.seats.length, 'Invalid round hops');
@@ -72,12 +91,15 @@ export function verifyLocalCouncilRound(transcript) {
       hop.contextHash === contextHash, 'Council hop lineage mismatch');
     requireCondition(hop.requestHash === requestHash({...body,index,seat:hop.seat,contextHash}),
       'Council request hash mismatch');
-    requireCondition(TEXT(hop.answer) && hop.answerHash === digest(hop.answer),
+    requireCondition(bounded(hop.answer,ROUND_LIMITS.maxTextChars) &&
+      hop.answerHash === digest(hop.answer),
       'Council answer hash mismatch');
-    requireCondition(strings(hop.evidenceRefs) && strings(hop.dissent) &&
+    requireCondition(boundedStrings(hop.evidenceRefs,ROUND_LIMITS.maxEvidenceRefs,ROUND_LIMITS.maxEvidenceChars) &&
+      boundedStrings(hop.dissent,ROUND_LIMITS.maxDissent,ROUND_LIMITS.maxDissentChars) &&
       STATE.has(hop.providerState) && hop.liveProviderEvidence === false,
       'Council hop may not self-claim live provider status');
-    requireCondition(TEXT(hop.completedAt) && hop.responseHash === responseHash(hop),
+    requireCondition(bounded(hop.completedAt,48) && Number.isFinite(Date.parse(hop.completedAt)) &&
+      hop.responseHash === responseHash(hop),
       'Council response hash mismatch');
     contextHash = hop.answerHash;
   });
@@ -90,7 +112,7 @@ export function verifyLocalCouncilRound(transcript) {
     exact(body.interruption, ['seatIndex','seat','reason'], 'interruption');
     requireCondition(body.interruption.seatIndex === body.hops.length &&
       body.interruption.seat === body.seats[body.hops.length] &&
-      ['BLOCKED','FAILED','DISPATCH_ERROR','INVALID_RESPONSE'].includes(body.interruption.reason),
+      ['BLOCKED','FAILED','DISPATCH_ERROR','INVALID_RESPONSE','TIMED_OUT'].includes(body.interruption.reason),
       'Invalid interruption state');
   } else {
     throw new Error('Unknown round state');
@@ -124,18 +146,37 @@ export async function runLocalCouncilRound(input) {
     const hash = requestHash({roundId:input.roundId,goal:input.goal,
       sourceRef:input.sourceRef,index:i,seat,contextHash});
     let response;
+    const controller = new AbortController();
+    const timedOut = Symbol('seat-timed-out');
+    let timer;
     try {
-      response = await input.dispatch(Object.freeze({
-        roundId:input.roundId,seat,index:i,goal:input.goal,sourceRef:input.sourceRef,
-        context,contextHash,requestHash:hash,
-      }));
+      // Abort is cooperative: the owning adapter must honor signal to stop
+      // any external request or prevent further cost after the deadline.
+      const result = await Promise.race([
+        Promise.resolve().then(() => input.dispatch(Object.freeze({
+          roundId:input.roundId,seat,index:i,goal:input.goal,sourceRef:input.sourceRef,
+          context,contextHash,requestHash:hash,signal:controller.signal,
+        }))),
+        new Promise(resolve => {
+          timer=setTimeout(() => {controller.abort();resolve(timedOut);},
+            input.timeoutMs ?? ROUND_LIMITS.defaultTimeoutMs);
+        }),
+      ]);
+      if (result === timedOut) {
+        interruption={seatIndex:i,seat,reason:'TIMED_OUT'};
+        break;
+      }
+      response=result;
     } catch {
-      // Do not persist exception strings: provider errors may contain credentials.
-      interruption = {seatIndex:i,seat,reason:'DISPATCH_ERROR'};
+      // Provider exceptions may contain secrets. Never persist their messages.
+      interruption={seatIndex:i,seat,reason:'DISPATCH_ERROR'};
       break;
+    } finally {
+      clearTimeout(timer);
     }
     const validShape = object(response) &&
-      Object.keys(response).every(key => ['status','answer','evidenceRefs','dissent','providerState'].includes(key)) &&
+      Object.keys(response).every(key => ['status','requestHash','answer','evidenceRefs','dissent','providerState'].includes(key)) &&
+      response.requestHash === hash &&
       ['completed','blocked','failed'].includes(response.status);
     if (!validShape) {
       interruption = {seatIndex:i,seat,reason:'INVALID_RESPONSE'};
@@ -145,8 +186,10 @@ export async function runLocalCouncilRound(input) {
       interruption = {seatIndex:i,seat,reason:response.status.toUpperCase()};
       break;
     }
-    if (!TEXT(response.answer) || !strings(response.evidenceRefs ?? []) ||
-      !strings(response.dissent ?? []) || !STATE.has(response.providerState)) {
+    if (!bounded(response.answer,ROUND_LIMITS.maxTextChars) ||
+      !boundedStrings(response.evidenceRefs ?? [],ROUND_LIMITS.maxEvidenceRefs,ROUND_LIMITS.maxEvidenceChars) ||
+      !boundedStrings(response.dissent ?? [],ROUND_LIMITS.maxDissent,ROUND_LIMITS.maxDissentChars) ||
+      !STATE.has(response.providerState)) {
       interruption = {seatIndex:i,seat,reason:'INVALID_RESPONSE'};
       break;
     }
@@ -157,7 +200,8 @@ export async function runLocalCouncilRound(input) {
       providerState:response.providerState,liveProviderEvidence:false,
       completedAt:(input.clock ?? (()=>new Date().toISOString()))(),
     };
-    requireCondition(TEXT(hop.completedAt), 'Invalid local clock result');
+    requireCondition(bounded(hop.completedAt,48) &&
+      Number.isFinite(Date.parse(hop.completedAt)), 'Invalid local clock result');
     hop.responseHash=responseHash(hop);
     hops.push(hop);
     context=response.answer;

@@ -25,3 +25,8 @@ Authenticated originating AI request → Bus ingress/trace → exact caller/auth
 
 ## Rollback
 Revert the Council export PR. FCR code and runtime remain unchanged. No direct main mutation, model invocation, broadcast, production release or provider-policy change is performed as part of this export.
+
+## Round transport hardening (PR #2 successor)
+The portable dispatcher requires each returned result to echo the exact `requestHash`; stale, foreign or uncorrelated replies fail closed. Inputs are bounded to 8 distinct seats, 4 Ki UTF-16 characters of goal, 2 Ki of source, and 32 Ki of initial/seat context. Evidence and dissent arrays have item/count budgets. Each seat has a 30-second default, configurable only between 1 ms and 60 seconds; expiry emits `TIMED_OUT` and invokes the injected adapter's `AbortSignal`.
+
+**Important:** cancellation is cooperative: an adapter that ignores `signal` can continue making external requests after the local round has stopped. The owning authenticated Bus/FCR runtime must enforce its own request cancellation, retry/cost limits and delivery ACKs. Echoing `requestHash` protects against accidental miscorrelation; it is **not** a cryptographic identity signature or independent live-provider attestation. The library remains `PREPARED_NOT_SENT` at the transport boundary.

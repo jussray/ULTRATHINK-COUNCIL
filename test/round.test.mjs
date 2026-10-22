@@ -9,7 +9,7 @@ const basis=()=>({
   seed:'first context',seats:['codex','claude'],
   clock:()=> '2026-10-22T00:00:00Z',
 });
-const mock=async request=>({status:'completed',
+const mock=async request=>({status:'completed',requestHash:request.requestHash,
   answer:`${request.seat} on ${request.context}`,providerState:'SIMULATED',
   evidenceRefs:['simulated:local-test'],dissent:[]});
 const origin={agent:'chatgpt',route:'founder-relay',threadId:'thread-one',correlationId:'case-one'};
@@ -36,7 +36,7 @@ test('blocked seat stops chain; resume does not recall completed seats',async()=
   const called=[];
   const dispatch=async q=>{
     called.push(q.seat);
-    return q.seat==='claude' ? {status:'blocked'} : mock(q);
+    return q.seat==='claude' ? {status:'blocked',requestHash:q.requestHash} : mock(q);
   };
   const first=await runLocalCouncilRound({...basis(),dispatch});
   assert.equal(first.state,'interrupted');
@@ -64,14 +64,14 @@ test('unexpected response fields fail closed instead of granting hidden authorit
   assert.equal(r.interruption.reason,'INVALID_RESPONSE');
 });
 test('source identity and seat order must match on resume',async()=>{
-  const first=await runLocalCouncilRound({...basis(),dispatch:async q=>q.seat==='claude'?{status:'blocked'}:mock(q)});
+  const first=await runLocalCouncilRound({...basis(),dispatch:async q=>q.seat==='claude'?{status:'blocked',requestHash:q.requestHash}:mock(q)});
   await assert.rejects(runLocalCouncilRound({...basis(),sourceRef:'forged',
     resumeFrom:first,dispatch:mock}),/identity/);
   await assert.rejects(runLocalCouncilRound({...basis(),seats:['claude','codex'],
     resumeFrom:first,dispatch:mock}),/identity/);
 });
 test('a tampered stored answer cannot be resumed',async()=>{
-  const first=await runLocalCouncilRound({...basis(),dispatch:async q=>q.seat==='claude'?{status:'blocked'}:mock(q)});
+  const first=await runLocalCouncilRound({...basis(),dispatch:async q=>q.seat==='claude'?{status:'blocked',requestHash:q.requestHash}:mock(q)});
   first.hops[0].answer='forged';
   await assert.rejects(runLocalCouncilRound({...basis(),resumeFrom:first,dispatch:mock}),/fingerprint|answer hash/);
 });
@@ -80,7 +80,7 @@ test('roster rejects duplicate seats or FCR masquerading as a model',async()=>{
   await assert.rejects(runLocalCouncilRound({...basis(),seats:['fcr'],dispatch:mock}),/seat/);
 });
 test('only completed rounds may produce Court and Bus metadata',async()=>{
-  const t=await runLocalCouncilRound({...basis(),dispatch:async()=>({status:'blocked'})});
+  const t=await runLocalCouncilRound({...basis(),dispatch:async q=>({status:'blocked',requestHash:q.requestHash})});
   assert.throws(()=>prepareLocalCourtHandoff({transcript:t,origin,claims:[],
     strongestChallenge:'What is really verified?'}),/incomplete/);
 });
@@ -120,4 +120,51 @@ test('launch visual FAIL remains Court HOLD with full source green',async()=>{
   });
   assert.equal(a.court.verdict,'HOLD');
   assert.ok(a.court.gaps.some(g=>g.includes('visualCanon')));
+});
+
+test('an answer from another request is rejected even when its text looks valid',async()=>{
+  const t=await runLocalCouncilRound({...basis(),dispatch:async q=>({...await mock(q),requestHash:'0'.repeat(64)})});
+  assert.equal(t.state,'interrupted');
+  assert.equal(t.interruption.reason,'INVALID_RESPONSE');
+  assert.equal(t.hops.length,0);
+});
+test('unbound blocked replies cannot stop another correlated round',async()=>{
+  const t=await runLocalCouncilRound({...basis(),dispatch:async()=>({status:'blocked',requestHash:'other'})});
+  assert.equal(t.interruption.reason,'INVALID_RESPONSE');
+});
+test('unresponsive seat times out and signals best-effort cancellation',async()=>{
+  let signal;
+  const t=await runLocalCouncilRound({...basis(),timeoutMs:10,dispatch:async q=>{
+    signal=q.signal;
+    return new Promise(()=>{});
+  }});
+  assert.equal(t.state,'interrupted');
+  assert.equal(t.interruption.reason,'TIMED_OUT');
+  assert.equal(t.nextSeatIndex,0);
+  assert.equal(signal.aborted,true);
+});
+test('timeouts are budgeted, never arbitrary or disabled',async()=>{
+  await assert.rejects(runLocalCouncilRound({...basis(),timeoutMs:0,dispatch:mock}),/timeout/);
+  await assert.rejects(runLocalCouncilRound({...basis(),timeoutMs:60001,dispatch:mock}),/timeout/);
+});
+test('oversized initial context and excessive seats fail before any dispatch',async()=>{
+  let count=0;
+  const dispatch=async q=>{count++;return mock(q);};
+  await assert.rejects(runLocalCouncilRound({...basis(),seed:'a'.repeat(32769),dispatch}),/oversized/);
+  await assert.rejects(runLocalCouncilRound({...basis(),seats:Array.from({length:9},(_,i)=>'seat-'+i),dispatch}),/seat/);
+  assert.equal(count,0);
+});
+test('oversized response and evidence lists stop the hop, not persist them',async()=>{
+  const huge=await runLocalCouncilRound({...basis(),dispatch:async q=>({...await mock(q),answer:'z'.repeat(32769)})});
+  assert.equal(huge.interruption.reason,'INVALID_RESPONSE');
+  const many=await runLocalCouncilRound({...basis(),dispatch:async q=>({...await mock(q),evidenceRefs:Array.from({length:33},(_,i)=>'ref-'+i)})});
+  assert.equal(many.interruption.reason,'INVALID_RESPONSE');
+});
+test('malformed stored transcript is rejected even if attacker recomputes its hash',async()=>{
+  const t=await runLocalCouncilRound({...basis(),dispatch:mock});
+  t.hops[0].answer='a'.repeat(32769);
+  const {fingerprint:old, ...rest}=t;
+  const {fingerprint}=await import('../src/council.mjs');
+  t.fingerprint=fingerprint(rest);
+  assert.throws(()=>verifyLocalCouncilRound(t),/answer hash|mismatch/);
 });
