@@ -5,7 +5,7 @@
  * It stores private replies in a locally protected SQLite file.
  */
 import {DatabaseSync} from 'node:sqlite';
-import {createPublicKey, createPrivateKey, sign, verify} from 'node:crypto';
+import {createPublicKey, createPrivateKey, createHash, sign, verify} from 'node:crypto';
 import {mkdirSync, statSync, chmodSync} from 'node:fs';
 import {dirname, resolve} from 'node:path';
 import {fingerprint} from '../src/council.mjs';
@@ -15,6 +15,8 @@ const SUBMIT='juss/council-bus-submit@v1';
 const CLAIM='juss/council-bus-claim@v1';
 const DELIVERY='juss/council-bus-delivery@v1';
 const ACK='juss/council-origin-ack@v1';
+const CONTENT='juss/council-bus-content@v1';
+const hashMessage=message=>createHash('sha256').update(message,'utf8').digest('hex');
 const MAX_CLOCK_DRIFT=5*60*1000;
 const DIGEST=/^[a-f0-9]{64}$/;
 const NONCE=/^[a-f0-9]{32,64}$/;
@@ -156,7 +158,16 @@ export function createLocalCouncilBus({
       }
       // DELIVERED in this signed record means claimed by the origin endpoint;
       // without a separately signed origin ACK the external outcome is uncertain.
-      return {state:'DELIVERY_ATTEMPTED',delivery:delivered,message:row.message,handoff:JSON.parse(row.handoff)};
+      // The signed delivery receipt is metadata only. Sign the actual reply's
+      // digest against that receipt; a modified HTTP response must not become
+      // an accepted answer or trigger an origin ACK.
+      const signedContent=signedPayload({
+        contract:CONTENT,handoffFingerprint:row.fingerprint,
+        deliveryFingerprint:fingerprint(delivered),origin:JSON.parse(row.origin),
+        messageHash:hashMessage(row.message),state:'CONTENT_BOUND',
+      },signer);
+      return {state:'DELIVERY_ATTEMPTED',delivery:delivered,signedContent,
+        message:row.message,handoff:JSON.parse(row.handoff)};
     });
   }
   function acknowledge(receipt){

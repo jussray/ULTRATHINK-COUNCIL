@@ -104,3 +104,89 @@ test('wrong Bus verifier key must stop message handling and ACK',async()=>{
     assert.equal((await x.client.receiveAndAcknowledge(async()=>true)).state,'ACKNOWLEDGED');
   }finally{await x.cleanup();}
 });
+
+test('tampered plaintext reply is rejected before onMessage or ACK',async()=>{
+  const x=await setup();
+  try{
+    await x.client.submit({council:x.fx.council,court:x.fx.court,
+      handoff:x.fx.handoff,reply:'Original authorized response.'});
+    const tamperFetch=async (url,options)=>{
+      const response=await fetch(url,options);
+      if(!url.endsWith('/v1/claim'))return response;
+      const payload=await response.json();
+      payload.message='An attacker changed the displayed answer.';
+      return new Response(JSON.stringify(payload),{
+        status:response.status,headers:{'content-type':'application/json'},
+      });
+    };
+    const altered=createLocalCouncilBusClient({
+      url:x.url,origin:ORIGIN,ingressPrivateKey:x.fx.keys.ingress.privateKey,
+      originPrivateKey:x.fx.keys.origin.privateKey,busPublicKey:x.fx.keys.bus.publicKey,
+      now:()=>NOW,fetchImpl:tamperFetch,
+    });
+    let handled=false;
+    await assert.rejects(altered.receiveAndAcknowledge(async()=>{handled=true;return true;}),
+      /BUS_CONTENT_MISMATCH/);
+    assert.equal(handled,false);
+    assert.equal((await x.client.receiveAndAcknowledge(async()=>true)).state,'ACKNOWLEDGED');
+  }finally{await x.cleanup();}
+});
+test('missing or swapped signed-content attestation fails closed',async()=>{
+  const x=await setup();
+  try{
+    await x.client.submit({council:x.fx.council,court:x.fx.court,
+      handoff:x.fx.handoff,reply:'Another authenticated response.'});
+    const incompleteFetch=async(url,options)=>{
+      const response=await fetch(url,options);
+      if(!url.endsWith('/v1/claim'))return response;
+      const payload=await response.json();
+      delete payload.signedContent;
+      return new Response(JSON.stringify(payload),{status:response.status});
+    };
+    const missing=createLocalCouncilBusClient({
+      url:x.url,origin:ORIGIN,ingressPrivateKey:x.fx.keys.ingress.privateKey,
+      originPrivateKey:x.fx.keys.origin.privateKey,busPublicKey:x.fx.keys.bus.publicKey,
+      now:()=>NOW,fetchImpl:incompleteFetch,
+    });
+    let callbacks=0;
+    await assert.rejects(missing.receiveAndAcknowledge(async()=>{callbacks++;return true;}),
+      /INVALID_SIGNED_CONTENT/);
+    assert.equal(callbacks,0);
+    assert.equal((await x.client.receiveAndAcknowledge(async()=>true)).state,'ACKNOWLEDGED');
+  }finally{await x.cleanup();}
+});
+test('oversized Bus response fails before a message is handled',async()=>{
+  const x=await setup();
+  try{
+    const inflatedFetch=async()=>new Response(JSON.stringify({payload:'x'.repeat(70000)}),
+      {status:200,headers:{'content-type':'application/json'}});
+    const huge=createLocalCouncilBusClient({
+      url:x.url,origin:ORIGIN,ingressPrivateKey:x.fx.keys.ingress.privateKey,
+      originPrivateKey:x.fx.keys.origin.privateKey,busPublicKey:x.fx.keys.bus.publicKey,
+      now:()=>NOW,fetchImpl:inflatedFetch,
+    });
+    let handled=false;
+    await assert.rejects(huge.receiveAndAcknowledge(async()=>{handled=true;return true;}),
+      /OVERSIZED_BUS_RESPONSE/);
+    assert.equal(handled,false);
+  }finally{await x.cleanup();}
+});
+test('stalled HTTP requests abort within the configured bounded deadline',async()=>{
+  const x=await setup();
+  try{
+    let aborted=false;
+    const stalled=(_url,options)=>new Promise((_resolve,reject)=>{
+      if(options.signal.aborted){aborted=true;reject(Error('ABORTED'));return;}
+      options.signal.addEventListener('abort',()=>{
+        aborted=true;reject(Error('ABORTED'));
+      },{once:true});
+    });
+    const client=createLocalCouncilBusClient({
+      url:x.url,origin:ORIGIN,ingressPrivateKey:x.fx.keys.ingress.privateKey,
+      originPrivateKey:x.fx.keys.origin.privateKey,busPublicKey:x.fx.keys.bus.publicKey,
+      now:()=>NOW,fetchImpl:stalled,timeoutMs:100,
+    });
+    await assert.rejects(client.receiveAndAcknowledge(async()=>true),/ABORTED/);
+    assert.equal(aborted,true);
+  }finally{await x.cleanup();}
+});

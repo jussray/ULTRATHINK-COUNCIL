@@ -3,7 +3,7 @@
  * A host application's onMessage callback must confirm handling before ACK.
  * This is NOT a ChatGPT connector or evidence of human-visible delivery.
  */
-import {createPrivateKey,createPublicKey,randomBytes,sign,verify} from 'node:crypto';
+import {createPrivateKey,createPublicKey,createHash,randomBytes,sign,verify} from 'node:crypto';
 import {fingerprint} from '../src/council.mjs';
 import {verifyCouncilBusHandoff} from '../src/busHandoff.mjs';
 
@@ -11,10 +11,14 @@ const PUB='juss/council-bus-submit@v1';
 const CLAIM='juss/council-bus-claim@v1';
 const ACK='juss/council-origin-ack@v1';
 const DELIVERY='juss/council-bus-delivery@v1';
+const CONTENT='juss/council-bus-content@v1';
+const MAX_BUS_BODY_BYTES=65536;
+const hashMessage=message=>createHash('sha256').update(message,'utf8').digest('hex');
 const B64=/^[A-Za-z0-9+/]{86}==$/;
 const SHA=/^[a-f0-9]{64}$/;
 const ORIGIN_FIELDS=['agent','route','threadId','correlationId'];
 const DELIVERY_FIELDS=['contract','handoffFingerprint','idempotencyKey','origin','state','deliveredAt','signature'];
+const CONTENT_FIELDS=['contract','handoffFingerprint','deliveryFingerprint','origin','messageHash','state','signature'];
 const EXACT=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&
   Object.keys(value).length===keys.length&&Object.keys(value).every(x=>keys.includes(x));
 const assert=(ok,code)=>{if(!ok)throw Error(code);};
@@ -46,9 +50,25 @@ function checkSignedBusReceipt(record,key,expectedHandoff,origin,now){
     Number.isSafeInteger(clock)&&Math.abs(clock-when)<=300000,
     'STALE_BUS_DELIVERY');
 }
+function checkSignedContent(record,key,delivery,handoff,origin,message){
+  assert(EXACT(record,CONTENT_FIELDS),'INVALID_SIGNED_CONTENT');
+  assert(record.contract===CONTENT&&record.state==='CONTENT_BOUND'&&
+    record.handoffFingerprint===handoff.fingerprint&&
+    record.deliveryFingerprint===fingerprint(delivery)&&
+    record.messageHash===hashMessage(message)&&equalOrigin(record.origin,origin),
+    'BUS_CONTENT_MISMATCH');
+  assert(typeof record.signature==='string'&&B64.test(record.signature),
+    'INVALID_CONTENT_SIGNATURE');
+  const {signature,...payload}=record;
+  const decoded=Buffer.from(signature,'base64');
+  assert(decoded.length===64&&decoded.toString('base64')===signature,
+    'INVALID_CONTENT_SIGNATURE');
+  assert(verify(null,Buffer.from(fingerprint(payload),'hex'),key,decoded),
+    'UNVERIFIED_BUS_CONTENT_SIGNATURE');
+}
 export function createLocalCouncilBusClient({
   url,origin,ingressPrivateKey,originPrivateKey,busPublicKey,
-  now=()=>Date.now(),fetchImpl=globalThis.fetch,
+  now=()=>Date.now(),fetchImpl=globalThis.fetch,timeoutMs=5000,
 }){
   const u=new URL(url);
   assert(u.protocol==='http:'&&u.hostname==='127.0.0.1'&&u.pathname==='/'&&
@@ -56,21 +76,42 @@ export function createLocalCouncilBusClient({
   assert(equalOrigin(origin,origin),'INVALID_ORIGIN');
   assert(ORIGIN_FIELDS.every(k=>typeof origin[k]==='string'&&
     /^[a-z][a-z0-9-]{0,79}$/.test(origin[k])),'INVALID_ORIGIN');
-  assert(typeof now==='function'&&typeof fetchImpl==='function','INVALID_CLIENT_CONFIGURATION');
+  assert(typeof now==='function'&&typeof fetchImpl==='function'&&
+    Number.isSafeInteger(timeoutMs)&&timeoutMs>=100&&timeoutMs<=30000,
+    'INVALID_CLIENT_CONFIGURATION');
   const ingress=getKey(ingressPrivateKey,'private');
   const originSigner=getKey(originPrivateKey,'private');
   const busVerifier=getKey(busPublicKey,'public');
   assert(!createPublicKey(ingress).export({format:'der',type:'spki'}).equals(
     createPublicKey(originSigner).export({format:'der',type:'spki'})),'DISTINCT_KEYS_REQUIRED');
   async function post(path,payload){
-    const response=await fetchImpl(u.href.replace(/\/$/,'')+path,{
-      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),
-      redirect:'error',
-    });
-    assert(response.ok,'BUS_HTTP_'+response.status);
-    const parsed=await response.json();
-    assert(parsed&&typeof parsed==='object'&&!Array.isArray(parsed),'INVALID_BUS_RESPONSE');
-    return parsed;
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),timeoutMs);
+    try{
+      const response=await fetchImpl(u.href.replace(/\/$/,'')+path,{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),
+        redirect:'error',signal:controller.signal,
+      });
+      assert(response.ok,'BUS_HTTP_'+response.status);
+      assert(response.body,'INVALID_BUS_RESPONSE');
+      const chunks=[];let length=0;
+      for await(const chunk of response.body){
+        length+=chunk.length;
+        if(length>MAX_BUS_BODY_BYTES){
+          controller.abort();
+          throw Error('OVERSIZED_BUS_RESPONSE');
+        }
+        chunks.push(Buffer.from(chunk));
+      }
+      let parsed;
+      try{parsed=JSON.parse(Buffer.concat(chunks).toString('utf8'));}
+      catch{throw Error('INVALID_BUS_RESPONSE');}
+      assert(parsed&&typeof parsed==='object'&&!Array.isArray(parsed),
+        'INVALID_BUS_RESPONSE');
+      return parsed;
+    }finally{
+      clearTimeout(timer);
+    }
   }
   async function submit({council,court,handoff,reply}){
     verifyCouncilBusHandoff({council,court,handoff});
@@ -97,6 +138,8 @@ export function createLocalCouncilBusClient({
     assert(fingerprint(unsigned)===claimed&&response.handoff.deliveryStatus==='PREPARED_NOT_SENT'&&
       response.handoff.authority?.grantsExecutionAuthority===false,'INVALID_HANDOFF');
     checkSignedBusReceipt(response.delivery,busVerifier,response.handoff,origin,now);
+    checkSignedContent(response.signedContent,busVerifier,response.delivery,
+      response.handoff,origin,response.message);
     // A display or message-store failure MUST leave the delivery unacknowledged.
     const handled=await onMessage(Object.freeze({
       message:response.message,handoff:response.handoff,delivery:response.delivery,

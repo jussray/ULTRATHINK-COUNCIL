@@ -44,6 +44,8 @@ test('genuine signed submit → claimed origin inbox → separate signed ACK sur
     assert.equal(client.publish(f.submission).duplicate,true);
     const claimed=client.claim(f.claim('1'.repeat(32)));
     assert.equal(claimed.state,'DELIVERY_ATTEMPTED');
+    assert.equal(claimed.signedContent.contract,'juss/council-bus-content@v1');
+    assert.equal(claimed.signedContent.deliveryFingerprint,fingerprint(claimed.delivery));
     assert.equal(claimed.message,'A bounded response for the right originating thread.');
     const validated=verifyCouncilDeliveryEvidence({
       council:f.council,court:f.court,handoff:f.handoff,
