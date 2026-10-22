@@ -239,3 +239,19 @@ test('retry safety adapter exceptions are redacted and do not retry',async()=>{
     verifyRetrySafety:async()=>{throw new Error('password=private');},
     dispatch:mock}),/not cleared/);
 });
+
+test('stalled retry-safety verifier times out, aborts, and never dispatches',async()=>{
+  const first=await runLocalCouncilRound({...basis(),timeoutMs:5,
+    dispatch:async()=>new Promise(()=>{})});
+  let signal;
+  let dispatches=0;
+  await assert.rejects(runLocalCouncilRound({...basis(),timeoutMs:5,resumeFrom:first,
+    dispatch:async q=>{dispatches++;return mock(q);},
+    verifyRetrySafety:async info=>{
+      signal=info.signal;
+      return new Promise(()=>{});
+    },
+  }),/not cleared/);
+  assert.equal(signal.aborted,true);
+  assert.equal(dispatches,0);
+});

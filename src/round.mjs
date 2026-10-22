@@ -146,14 +146,29 @@ export async function runLocalCouncilRound(input) {
       requireCondition(typeof input.verifyRetrySafety === 'function',
         'Timed-out retry requires trusted owner verification');
       let safe = false;
+      const retryController = new AbortController();
+      const retryDeadline = Symbol('retry-safety-deadline');
+      let retryTimer;
       try {
-        safe = await input.verifyRetrySafety(Object.freeze({
-          roundId:previous.roundId,sourceRef:previous.sourceRef,
-          seat:previous.interruption.seat,priorFingerprint:previous.fingerprint,
-          nextSeatIndex:previous.nextSeatIndex,
-        })) === true;
+        const result = await Promise.race([
+          Promise.resolve().then(() => input.verifyRetrySafety(Object.freeze({
+            roundId:previous.roundId,sourceRef:previous.sourceRef,
+            seat:previous.interruption.seat,priorFingerprint:previous.fingerprint,
+            nextSeatIndex:previous.nextSeatIndex,
+            signal:retryController.signal,
+          }))),
+          new Promise(resolve => {
+            retryTimer = setTimeout(() => {
+              retryController.abort();
+              resolve(retryDeadline);
+            }, input.timeoutMs ?? ROUND_LIMITS.defaultTimeoutMs);
+          }),
+        ]);
+        safe = result === true;
       } catch {
-        // Never persist an exception from the owning runtime; it might hold secrets.
+        // Never persist verifier exceptions: they may include sensitive data.
+      } finally {
+        clearTimeout(retryTimer);
       }
       requireCondition(safe, 'Timed-out retry is not cleared by owning runtime');
     }
