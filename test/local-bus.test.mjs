@@ -75,7 +75,8 @@ test('origin isolation and arbitrary callback fields cannot pass signed ingress'
   const f=fixture();const client=createLocalCouncilBus(f.config);
   try {
     const wrong={...f.handoff,origin:{...ORIGIN,route:'unauthorized'}};
-    const signed=signature({...f.submission,handoff:wrong,signature:undefined},f.ingress.privateKey);
+    const {signature:oldSignature,...payload}=f.submission;
+    const signed=signature({...payload,handoff:wrong},f.ingress.privateKey);
     assert.throws(()=>client.publish(signed),/INVALID_SUBMISSION|UNAUTHENTICATED|fingerprint/);
     client.publish(f.submission);
     const foreign=signature({contract:'juss/council-bus-claim@v1',
@@ -98,8 +99,8 @@ test('bad ACK correlation and re-signed wrong delivery are rejected',()=>{
   try{
     client.publish(f.submission);
     const {delivery}=client.claim(f.claim('6'.repeat(32)));
-    const fake=signature({...f.ack(delivery),deliveryFingerprint:'f'.repeat(64),signature:undefined},
-      f.origin.privateKey);
+    const {signature:oldSignature,...payload}=f.ack(delivery);
+    const fake=signature({...payload,deliveryFingerprint:'f'.repeat(64)},f.origin.privateKey);
     assert.throws(()=>client.acknowledge(fake),/INVALID_ACK|ACK_DELIVERY_MISMATCH/);
     const forged=signature({contract:'juss/council-origin-ack@v1',handoffFingerprint:f.handoff.fingerprint,
       deliveryFingerprint:fingerprint(delivery),origin:ORIGIN,state:'ACKNOWLEDGED',
