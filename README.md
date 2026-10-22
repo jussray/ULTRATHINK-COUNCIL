@@ -64,3 +64,16 @@ idempotency and replay windows, bound retries and cost, choose one canonical
 persisted transcript, and prove authenticated return-to-origin delivery.
 Those tests require authorized provider/runtime access and remain **BLOCKED**
 until ENG-7 has authoritative source and real readback.
+
+## Portable executable Council/Court export (source-owned)
+
+The complete **portable domain API** is now self-contained here: `src/index.mjs` exports the Council packet/Court validator (`src/council.mjs`), protected prepared-only Bus handoff (`src/busHandoff.mjs`), and injected chained-round orchestrator (`src/round.mjs`). Import through `@jussray/ultrathink-council` or its explicit subpaths. Run `npm test` or `node scripts/strict-tests.mjs` with Node 22+; no vendor SDK or secrets required.
+
+The round orchestrator is adapted from FCR's `src/lib/councilRound.ts` interface concepts. It runs only adapters **the owning application explicitly supplies**, preserves hop lineage and checkpoint continuity, interrupts blocked/invalid seats, and can produce a Court HOLD plus a Bus handoff. It does not install providers, authenticate incoming data, send callbacks, persist a live Council transcript or imply that real agents answered. See [export provenance and remaining runtime gate](docs/EXPORT_PROVENANCE.md).
+
+FCR continues to own real GitHub/provider authorization and authenticated mission routes; Council Bus continues to own live routing and return-to-origin. These must be integrated and verified separately without expanding this library's authority.
+
+
+### Portable round adapter contract
+
+Use `runLocalCouncilRound({roundId,goal,sourceRef,seed,seats,dispatch,timeoutMs?})` to run a bounded local round. Every dispatch receives `{roundId,seat,index,goal,sourceRef,context,contextHash,requestHash,signal}`; its response **must echo** `requestHash` and return `status: 'completed'|'blocked'|'failed'`. Completed replies additionally supply nonempty `answer`, `providerState: 'UNVERIFIED'|'SIMULATED'` and optional text `evidenceRefs`/`dissent` arrays. A mismatched hash, excessive payload, unsupported provider claim or deadline expires the current hop without advancing the chain. `signal` is best-effort cancellation; the owner must separately enforce network timeouts, budget, authentication and delivery receipts. This contract is not a live Council Bus integration.

@@ -15,5 +15,8 @@ jobs:
         with:
           node-version: '22'
       - run: node --check src/council.mjs
+      - run: node --check src/busHandoff.mjs
+      - run: node --check src/round.mjs
+      - run: node --check src/index.mjs
       - run: node --check scripts/strict-tests.mjs
       - run: node scripts/strict-tests.mjs
