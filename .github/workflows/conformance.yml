@@ -19,5 +19,8 @@ jobs:
       - run: node --check src/round.mjs
       - run: node --check src/index.mjs
       - run: node --check src/deliveryProof.mjs
+      - run: node --check bus/localBus.mjs
+      - run: node --check bus/http.mjs
+      - run: node --check bus/server.mjs
       - run: node --check scripts/strict-tests.mjs
       - run: node scripts/strict-tests.mjs

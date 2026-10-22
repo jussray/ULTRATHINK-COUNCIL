@@ -83,3 +83,8 @@ Use `runLocalCouncilRound({roundId,goal,sourceRef,seed,seats,dispatch,timeoutMs?
 The source-only `src/deliveryProof.mjs` offers `verifyCouncilDeliveryEvidence(...)`. It accepts an already verified Council/Court handoff, a **Bus-signed delivery receipt** and a separately **origin-agent-signed acknowledgment**. The two fresh Ed25519 signatures must match the exact handoff ID, origin tuple and delivery digest; the owning application provides the **trusted public keys and current clock**.
 
 This library does not mint trusted keys, sign receipts, persist nonce/idempotency state, send to agents, authenticate providers, or display messages. The returned state `SIGNED_DELIVERY_AND_ORIGIN_ACK_VERIFIED` proves only the supplied, correctly signed records under the owner's configured keys. It **does not** prove real provider calls or override a Court HOLD. A trusted Bus runtime must implement authorization, callback authentication, persistent replay protection and actual network delivery before this verifier can certify a real route; mocked receipts in tests are not real replies.
+
+
+## Local authenticated return-to-origin reference (not deployed)
+
+A separately scoped `bus/` reference implements signed Council handoff intake, SQLite-backed idempotent storage, signed origin polling, Bus delivery receipts and distinct signed origin acknowledgments. Its HTTP listener **only binds to loopback**; it does not choose the Council federation's production backing or make ChatGPT respond automatically. Tests use ephemeral keys, private temporary DB directories and HTTP loopback. See [local Bus runtime and proof limits](docs/BUS_LOCAL_RUNTIME.md). Never store keys or replies in Git.

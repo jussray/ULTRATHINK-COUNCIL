@@ -139,3 +139,15 @@ test('HTTP interface remains local, bounded and enforces signed inputs',async()=
     assert.equal((await health.json()).mode,'local-reference');
   }finally{await new Promise(done=>server.close(done));bus.close();f.cleanup();}
 });
+
+test('claim nonces remain rejected across SQLite restarts',()=>{
+  const f=fixture();let client=createLocalCouncilBus(f.config);
+  try{
+    client.publish(f.submission);
+    const nonce=f.claim('a'.repeat(32));
+    client.claim(nonce);
+    client.close();
+    client=createLocalCouncilBus(f.config);
+    assert.throws(()=>client.claim(nonce),/REPLAYED_CLAIM/);
+  }finally{client.close();f.cleanup();}
+});
