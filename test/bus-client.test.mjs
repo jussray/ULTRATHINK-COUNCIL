@@ -180,7 +180,7 @@ test('stalled HTTP requests abort within the configured bounded deadline',async(
       url:x.url,origin:ORIGIN,originPrivateKey:x.fx.keys.origin.privateKey,busPublicKey:x.fx.keys.bus.publicKey,
       now:()=>NOW,fetchImpl:stalled,timeoutMs:100,
     });
-    await assert.rejects(client.receiveAndAcknowledge(async()=>true),/ABORTED/);
+    await assert.rejects(client.receiveAndAcknowledge(async()=>true),/BUS_TIMEOUT/);
     assert.equal(aborted,true);
   }finally{await x.cleanup();}
 });
