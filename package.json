@@ -1,0 +1,18 @@
+{
+  "name": "@jussray/ultrathink-council",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22"},
+  "exports": {
+    ".": "./src/index.mjs",
+    "./council": "./src/council.mjs",
+    "./court": "./src/council.mjs",
+    "./bus-handoff": "./src/busHandoff.mjs",
+    "./round": "./src/round.mjs"
+  },
+  "scripts": {
+    "test": "node scripts/strict-tests.mjs",
+    "check": "node --check src/council.mjs && node --check src/busHandoff.mjs && node --check src/round.mjs && node --check src/index.mjs && npm test"
+  }
+}
