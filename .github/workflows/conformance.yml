@@ -18,5 +18,6 @@ jobs:
       - run: node --check src/busHandoff.mjs
       - run: node --check src/round.mjs
       - run: node --check src/index.mjs
+      - run: node --check src/deliveryProof.mjs
       - run: node --check scripts/strict-tests.mjs
       - run: node scripts/strict-tests.mjs

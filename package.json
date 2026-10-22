@@ -3,13 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": {"node": ">=22"},
+  "engines": {
+    "node": ">=22"
+  },
   "exports": {
     ".": "./src/index.mjs",
     "./council": "./src/council.mjs",
     "./court": "./src/council.mjs",
     "./bus-handoff": "./src/busHandoff.mjs",
-    "./round": "./src/round.mjs"
+    "./round": "./src/round.mjs",
+    "./delivery-proof": "./src/deliveryProof.mjs"
   },
   "scripts": {
     "test": "node scripts/strict-tests.mjs",
