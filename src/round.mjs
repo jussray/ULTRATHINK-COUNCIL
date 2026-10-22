@@ -95,7 +95,7 @@ export function verifyLocalCouncilRound(transcript) {
     requireCondition(typeof hop.attemptId === 'string' && ATTEMPT_ID.test(hop.attemptId) &&
       !attempts.has(hop.attemptId), 'Invalid or repeated Council attempt identity');
     attempts.add(hop.attemptId);
-    requireCondition(hop.requestHash === requestHash({...body,index,seat:hop.seat,contextHash}),
+    requireCondition(hop.requestHash === requestHash({...body,index,seat:hop.seat,contextHash,attemptId:hop.attemptId}),
       'Council request hash mismatch');
     requireCondition(bounded(hop.answer,ROUND_LIMITS.maxTextChars) &&
       hop.answerHash === digest(hop.answer),
