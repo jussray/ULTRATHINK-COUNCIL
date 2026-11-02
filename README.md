@@ -4,7 +4,7 @@ This is the **Council and Court** implementation home, not the Council Bus trans
 
 - **ULTRATHINK Council (this repo)**: independent agent findings, adversarial reasoning, dissent, evidence-bound synthesis.
 - **Founder Court (this repo)**: claims, witnesses, contradictions, cross-examination, holds and next verification gates. It is a face of the same governed Council, not another authority plane.
-- **Council Bus (Linear [ENG-7](https://linear.app/juss/issue/ENG-7/council-bus-reconcile-transport-and-return-findings-to-originating-ai))**: routing, message delivery and return-to-origin; no bus runtime is bundled here.
+- **Council Bus (current [Juss & Co Linear project](https://linear.app/sekretbip/project/council-bus-a96a4a7ad5c2); legacy ENG-7 historical)**: owns authoritative routing, message delivery, and return-to-origin. This repository now bundles only a guarded, opt-in Bus **adapter** (no hosted transport service or owner credentials).
 - **ULTRATHINK kernel ([jussray/ULTRATHINK-](https://github.com/jussray/ULTRATHINK-))**: operating disciplines and verification rules; do not clone the kernel here.
 - **FCR ([Council](https://github.com/jussray/founder-control-room/blob/main/.control-room/COUNCIL.md), [Court](https://github.com/jussray/founder-control-room/blob/main/.control-room/COURT.md))**: authoritative existing governance and founder approval membranes. This repo does not supersede them.
 
@@ -22,7 +22,7 @@ Source-controlled claim labels, `provider:` strings, simulated model roles or wi
 
 ## Gate
 
-This export is a pure local library. It does **not** establish that Council Bus callbacks, production provider calls, Court verdict publication, or return-to-origin are live. Complete end-to-end authenticated integration and visual/functional verification on the owning project before any such claim.
+This export is a local portable library with an optional, injected Bus delivery adapter. It does **not** establish that Council Bus callbacks, production provider calls, Court verdict publication, or return-to-origin are live. Complete end-to-end authenticated integration and visual/functional verification on the owning project before any such claim.
 ## Security/authority note (October 2026)
 
 Council fingerprints are public recomputable SHA-256 integrity references, **not** signatures, authentication, provider attestation, independent-witness verification, or founder approval. The verifier therefore checks the complete packet schema and rejects unauthorized fields, forged `LIVE` seat labels, duplicate claim IDs, and unsupported authority/transport claims even when an attacker recalculates the fingerprint. Court records explicitly preserve single-witness limitations without treating a single authoritative source as automatically invalid.
@@ -77,3 +77,9 @@ FCR continues to own real GitHub/provider authorization and authenticated missio
 ### Portable round adapter contract
 
 Use `runLocalCouncilRound({roundId,goal,sourceRef,seed,seats,dispatch,timeoutMs?})` to run a bounded local round. Every dispatch receives `{roundId,seat,index,goal,sourceRef,context,contextHash,requestHash,signal}`; its response **must echo** `requestHash` and return `status: 'completed'|'blocked'|'failed'`. Completed replies additionally supply nonempty `answer`, `providerState: 'UNVERIFIED'|'SIMULATED'` and optional text `evidenceRefs`/`dissent` arrays. A mismatched hash, excessive payload, unsupported provider claim or deadline expires the current hop without advancing the chain. `signal` is best-effort cancellation; the owner must separately enforce network timeouts, budget, authentication and delivery receipts. This contract is not a live Council Bus integration.
+
+## Embedded Council Bus adapter — 2026-11-02 source addendum
+
+The Council package now exports `runEmbeddedCouncilBus` from `./embedded-bus` and the root index. It can process already verified Council/Court metadata using **required owning-runtime ports**: trusted authentication, route/tenant authorization, ingress/dispatch/egress feature flags, durable atomic claim-once journal, signed origin callback, independent ACK verification, and storage readback. Missing or disabled ports fail closed. Court HOLD blocks forwarding; callback metadata has no execution authority. The original handoff remains `PREPARED_NOT_SENT`.
+
+See [embedded runtime contract](docs/EMBEDDED_BUS_RUNTIME.md). A green unit/conformance run proves only this module's behavior with injected test ports; it is **not** a deployed Bus, cryptographic signer, remote provider, durable production store, callback endpoint, or actual origin acknowledgement. Council Bus retains transport ownership, and founder authorization remains FCR-owned. No merge or deploy is implied.
