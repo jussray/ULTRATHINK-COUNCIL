@@ -77,3 +77,9 @@ FCR continues to own real GitHub/provider authorization and authenticated missio
 ### Portable round adapter contract
 
 Use `runLocalCouncilRound({roundId,goal,sourceRef,seed,seats,dispatch,timeoutMs?})` to run a bounded local round. Every dispatch receives `{roundId,seat,index,goal,sourceRef,context,contextHash,requestHash,signal}`; its response **must echo** `requestHash` and return `status: 'completed'|'blocked'|'failed'`. Completed replies additionally supply nonempty `answer`, `providerState: 'UNVERIFIED'|'SIMULATED'` and optional text `evidenceRefs`/`dissent` arrays. A mismatched hash, excessive payload, unsupported provider claim or deadline expires the current hop without advancing the chain. `signal` is best-effort cancellation; the owner must separately enforce network timeouts, budget, authentication and delivery receipts. This contract is not a live Council Bus integration.
+
+
+### Replay-safe v2 local rounds and uncertain cancellation
+Portable rounds now emit `juss/portable-council-round@v2`, not v1. Every dispatch attempt receives a fresh cryptographic 128-bit `attemptId` and a different `requestHash`, including retries of the same seat. A response must echo that hash. v1 stored round objects cannot be silently resumed using v2; owning applications must preserve old records as historical and begin a new reviewed round.
+
+A timed-out seat may still be executing remotely if its adapter ignores the abort signal. `resumeFrom` therefore **refuses a timeout retry by default**. The owning runtime may explicitly inject `verifyRetrySafety(prior)`, which must return `true` only after it independently checks cancellation/provider outcome and budget. A callback result is a *local trust boundary*, not an independently attested cancellation or automatic approval to spend. A new `attemptId` improves same-round replay resistance but is not a signed provider identity or Bus delivery receipt.
