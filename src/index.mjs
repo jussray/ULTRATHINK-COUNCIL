@@ -3,3 +3,4 @@
 export * from './council.mjs';
 export * from './busHandoff.mjs';
 export * from './round.mjs';
+export * from './deliveryProof.mjs';
